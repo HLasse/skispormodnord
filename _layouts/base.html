@@ -30,9 +30,10 @@ common-js:
   {% include nav.html %}
 
   {{ content }}
-
-  {% include footer.html %}
-
+  {% unless page.hide_footer %}
+    {% include footer.html %}
+  {% endunless %}
+  
   {% include footer-scripts.html %}
 
 </body>
