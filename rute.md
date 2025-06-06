@@ -8,11 +8,11 @@ Denne side indeholder vores planlagte og faktiske ruter, samt nogle af de overve
 
 # Ruteplanlægning
 
-Vi brugte en blanding af [UT](https://ut.no) og [OutdoorActive](https://outdooractive.com) til at tegne ruter og lave GPX filer. UT er nice fordi den viser DNT's rutenet og hytter, men den dækker kun Norge. OutdoorActive dækker bredere, men kan være lidt mere vanskelig at tegne i (husk at brug deres "Topo" kort). 
+Vi brugte en blanding af [UT](https://ut.no){:target="_blank"} og [OutdoorActive](https://outdooractive.com){:target="_blank"} til at tegne ruter og lave GPX filer. UT er nice fordi den viser DNT's rutenet og hytter, men den dækker kun Norge. OutdoorActive dækker bredere, men kan være lidt mere vanskelig at tegne i (husk at brug deres "Topo" kort). 
 
 På turen havde vi lagt ruterne ind på en GPS/nødsender samt på Topo GPS app'en på vores telefoner. Det gjorde det lidt nemmere at navigere under dårligere forhold, og at tegne nye/alternative ruter ind undervejs. 
 
-Du kan se de individuelle planlagte etaper på OutdoorActive [her](https://out.ac/IXaFqX). En samlet GPX fil kan hentes [her](/assets/maps/sorted_npl_planlagt.gpx). 
+Du kan se de individuelle planlagte etaper på OutdoorActive [her](https://out.ac/IXaFqX){:target="_blank"}. En samlet GPX fil kan hentes [her](/assets/maps/sorted_npl_planlagt.gpx). 
 
 Intet går jo som bekendt som planlagt. Den faktiske rute vi gik (med trace cirka hvert 30. minut) kan hentes som GPX fil [her](/assets/maps/sorted_NPL.gpx), eller ses på kortet herunder sammen med den planlagte rute. Du kan med fordel ændre kortet til "OSM topo (OpenTopoMap)" for bedre at se højder. 
 
