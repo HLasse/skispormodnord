@@ -52,10 +52,63 @@ Grove opskrifter til fx frokost og aftensmad der følger 2:1:1 princippet ift. f
 
 ### Hjemmelavede retter
 
-De fleste gryderetter (der nemt kan skaleres op) fungerer fint tørre også. Vær obmærksom på ikke at bruge for meget fedtstof under tilberedningen da det kan modvirke tørringen, at hakke/skære alting fint, og ikke at bruge for meget væske. Brug også lidt mere krydderi end du plejer - maden mister smag ved tørring. 
+De fleste gryderetter (der nemt kan skaleres op) fungerer fint tørre også. Vær obmærksom på ikke at bruge for meget fedtstof under tilberedningen da det kan modvirke tørringen, at hakke/skære alting fint, og ikke at komme for meget væske i (ellers tager det en evighed om at tørre). Brug også lidt mere krydderi end du plejer - maden mister smag ved tørring. 
 
 Vi havde stor success med fx chili sin carne, kikærtecurry, svampestroganoff, bolognese/stroganoff med sojagranulat.
 
+Her følger lidt links til inspiration:
 
+* [Risotto med grønne linser og svampe](https://avocadoskillet.com/mushroom-lentil-risotto/).
+* [Kikærtecurry](https://vegetariskhverdag.dk/2019/02/indisk-curry-med-kikaerter/). Tip: skru ned for væsken og smærmængden - det tilsætter du på turen.
+* [Svampestroganoff](https://vegetariskhverdag.dk/2023/02/svampestroganoff/).
+* [Sojastroganoff](https://vegetariskhverdag.dk/2019/10/halloumi-stroganoff/). Udskift halloumi med sojachunks som fx [dem her](https://nuttyvegan.dk/vare/soja-koed/) eller [dem her](https://nuttyvegan.dk/vare/storkoeb-soja-koed-vegansk-koederstatning/). Tip: kom ca. en tsk. bagepulver per 100g tørret soja med når du rehydrer
+* [Chili sin carne]()
+* [Peanutbuttergryde](https://stinna.dk/aftensmad/peanutbuttergryde.html)
+* [Black bean chili](https://vegetariskhverdag.dk/2018/09/black-bean-chili/)
+* [Daal](https://vegetariskhverdag.dk/2019/08/daal-dhal-dal-den-populaere-indiske-linsegryde/)
 
+#### Dehydrering
 
+Den nemmeste måde at dehydrere mad på, er at anskaffe sig en dehydrator. Det holder en jævn temperatur, sørger for god udluftning, og er super nemt. Man spreder sin mad i et tyndt lag på pladerne, indstiller temperatur (typisk omkring 65°) og timer (6-12 timer for de fleste ting), og så passer det ellers sig selv. 
+
+Alternativt kan man bruge sin almindelig ovn ved at sætte den på lav temperatur, og sætte noget i klemme døren så der kommer lidt udluftning. Det fungerer sådan set fint, men hvis du satser på at tørre mad til en væsentlig del af turen vil jeg klart anbefale at investere i /leje/låne en god dehydrator - det giver mere kontrol og går hurtigere. 
+
+Der er mange gode tips, tricks og opskrifter at hente fra [Backpacking Chef](https://www.backpackingchef.com/dehydrating-food.html) for både de helt nye og de garvede dehydratorer. 
+
+# Snacks
+
+En stor del af vores kalorieindtag kom fra snacks. Nødder, chokolade, kage, alt det gode. Primære tips:
+
+* Sørg for variation!
+* Hjemmelavet kage er en kæmpe vinder!
+
+En dagsration snacks for hver af os bestod typisk af: 
+
+* **200g nødde/chokoladeblanding:** Hakkede ristede mandler blandet med hakket mørk chokolade. Variationer med chokoladeknapper, tranebær, osv. Lavet hjemmefra og pakket i dagsrationer i 1l ziplock poser.
+* **100g hjemmelavet kage:** Vi bagte store portioner af snickerskage, [Svalbardbrownie](https://www.dn.no/smak/oppskrifter/dessert/kake/sjokolade/brownies-som-aldri-fryser-svalbard-kaken/1-1-5583087), sirupskage, og havregrynskugler. Fungerede fantastisk i kulden, mega lækkert, relativt billigt, og super nemt at lave. Havregrynskuglerne kunne måske med fordel have været lavet som et større stykke kage i stedet for at trille små kugler. Blev skåret i 50g stykker og opbevaret i fryser indtil depotkassen skulle sendes. Opskrifterne kan ses længere nede på siden. 
+* **1 tortillapandekage med peanutbutter og syltetøj**. Lavet på depotdage.
+* **50g chokoladebar**. Snickers, Mars el.lign. 
+* **50g mørk chokolade**. Kogechokolade er billigst, men lækkert med lidt variation. 
+* **Kiks**. Lad nu være med at købe dem der prøver at være sunde - fuld smæk på chokoladen.
+* **Marcipan**. Enten rå eller på kiks.
+* **Nøddeblanding**. Blandede nødder, chilinødder, eller hvad man lige har lyst til. 
+* **Bland selv slik**. Man spiser ikke så meget af det, men det er hammerlækkert på tur. Stærk anbefaling til surt slik som kontrast til alt det søde man spiser. 
+
+Vi havde købt og pakket stort set alle snacks hjemmefra. Det er nok unødvendigt, da det 1) er dyrt at sende, 2) næsten altid er muligt at handle når man henter depotkasser. De penge man sparer på at jage tilbud bliver hurtigt ædt af fragt, og man kan lettere variere og vælge hvad man har lyst til hvis man handler undervejs. 
+
+## Kageopskrifter
+Kagerne og opskrifter er valgt efter at kunne fungere godt i kulden (ikke bare fryse til en stenhård klump), kunne holde sig længe, og for at være vældig simple at lave.
+
+### Svalbard brownie
+Opskrift taget fra [dn.no](https://www.dn.no/smak/oppskrifter/dessert/kake/sjokolade/brownies-som-aldri-fryser-svalbard-kaken/1-1-5583087) lavet af Sigrid Henjum.
+![Svalbard brownie opskrift](/assets/mad/svalbard_brownie.png){: .mx-auto.d-block :}
+
+### Snickerskage
+Opskrift fra Bjørnulf Håkenrud, Turmat, 2005.
+![Snickerskage opskrift](/assets/mad/snickerskage.png){: .mx-auto.d-block :}
+
+### Sirupskage
+Opskrift fra Bjørnulf Håkenrud, Turmat, 2005.
+![Sirupskage opskrift](/assets/mad/sirupskage.png){: .mx-auto.d-block :}
+
+Note: vi kom ikke rosiner i, og tilføjede en del krydderier: nellike, kardemomme, kanel. 
