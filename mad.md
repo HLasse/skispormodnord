@@ -66,7 +66,7 @@ Her følger lidt links til inspiration:
 * [Risotto med grønne linser og svampe](https://avocadoskillet.com/mushroom-lentil-risotto/).
 * [Kikærtecurry](https://vegetariskhverdag.dk/2019/02/indisk-curry-med-kikaerter/). Tip: skru ned for væsken og smærmængden - det tilsætter du på turen.
 * [Svampestroganoff](https://vegetariskhverdag.dk/2023/02/svampestroganoff/).
-* [Sojastroganoff](https://vegetariskhverdag.dk/2019/10/halloumi-stroganoff/). Udskift halloumi med sojachunks som fx [dem her](https://nuttyvegan.dk/vare/soja-koed/) eller [dem her](https://nuttyvegan.dk/vare/storkoeb-soja-koed-vegansk-koederstatning/). Tip: kom ca. en tsk. bagepulver per 100g tørret soja med når du rehydrer
+* [Sojastroganoff](https://vegetariskhverdag.dk/2019/10/halloumi-stroganoff/). Udskift halloumi med sojachunks som fx [dem her](https://nuttyvegan.dk/vare/soja-koed/) eller [dem her](https://nuttyvegan.dk/vare/storkoeb-soja-koed-vegansk-koederstatning/). Tip: kom ca. en tsk. bagepulver per 100g tørret soja med når du rehydrerer - det fjerner oppustheden nogen får.
 * [Chili sin carne]()
 * [Peanutbuttergryde](https://stinna.dk/aftensmad/peanutbuttergryde.html)
 * [Black bean chili](https://vegetariskhverdag.dk/2018/09/black-bean-chili/)
