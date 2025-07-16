@@ -1,8 +1,9 @@
 ---
 layout: page
-title: About me
-subtitle: Why you'd want to go on a date with me
+title: Om os
 ---
+
+Hej! Vi hedder Solvej og Lasse
 
 My name is Inigo Montoya. I have the following qualities:
 

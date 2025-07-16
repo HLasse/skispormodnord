@@ -11,11 +11,14 @@ Mad. Centrum for størstedelen af vores tanker i løbet af turen, og en kæmpe t
 
 Vi valgte at tørre langt de meste af vores mad selv, i stedet for at købe frysetørret mad. Både for at spare en hulens masse penge, og for at få lidt større variation i kosten. Vi spiste alle måltider fra en [madtermo](https://www.biltema.dk/fritid/friluftsliv-og-camping/termokander/termobeholder-til-mad-5-dl-2000038620){:target="_blank"}. Enormt praktisk og lækkert til at få en varm frokost på vinterfjeldet! 
 
-Tips:
+### Tips
+
+<div markdown="1" class="box-note">
 * Har du tænkt dig at tørre store mængder mad selv, så lån eller køb en god, stor dehydrator. Vi lånte en [Excalibur 9 tray](https://excaliburdehydrator.com/collections/all-dehydrators/products/excalibur-9-tray-26hr-timer-solid-door-black){:target="_blank"} og det virkede fantastisk.
 * Spar dig selv for uendelig grøntsagsskæring og køb en stor pose tørrede grøntsager som supplement. Køb fx 5 kg TØRREDE grøntsager (40-50kg i frisk vægt) for omkring 300 kr. fra [bioshi24.eu](https://bioshi24.eu/en/products/dried-vegetables-5-kg-tola-95644?query_id=1){:target="_blank"}. Det tog godt en måneds tid før vi modtog vores bestilling, så vær ude i god tid! 
 * Lav en [pot cosy](https://outsite.dk/tips-og-tricks/laering-om-friluftsliv/kogegrej/1122-lav-en-pot-cozy){:target="_blank"} til dine gryder. Sparer tid og benzin ved at du bare skal bringe din mad i kog, og derefter kan det holde sig varmt og blive færdig i cosyen. 
 * Lav og tør så mange hele retter (fx chili sin carne, daal) som du kan nå - det er væsentligt mere lækkert end retter der består af individuelt tørrede komponenter. 
+</div>
 
 # Kalorieberegning
 
