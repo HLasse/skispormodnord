@@ -1,9 +1,11 @@
 ---
 layout: page
 title: Mad
+toc: true
 ---
 
 Mad. Centrum for størstedelen af vores tanker i løbet af turen, og en kæmpe tidsrøver under forberedelsen. Vi vil her prøve at dele vores bedste tips til kalorieberegning og indkøb, samt vores bedste turopskrifter.
+
 
 # Overblik
 
@@ -71,7 +73,7 @@ Her følger lidt links til inspiration:
 
 Den nemmeste måde at dehydrere mad på, er at anskaffe sig en dehydrator. Det holder en jævn temperatur, sørger for god udluftning, og er super nemt. Man spreder sin mad i et tyndt lag på pladerne, indstiller temperatur (typisk omkring 65°) og timer (6-12 timer for de fleste ting), og så passer det ellers sig selv. 
 
-Alternativt kan man bruge sin almindelig ovn ved at sætte den på lav temperatur, og sætte noget i klemme døren så der kommer lidt udluftning. Det fungerer sådan set fint, men hvis du satser på at tørre mad til en væsentlig del af turen vil jeg klart anbefale at investere i /leje/låne en god dehydrator - det giver mere kontrol og går hurtigere. 
+Alternativt kan man bruge sin almindelige ovn ved at sætte den på lav temperatur, og sætte noget i klemme døren så der kommer lidt udluftning. Det fungerer sådan set fint, men hvis du satser på at tørre mad til en væsentlig del af turen vil jeg klart anbefale at investere i /leje/låne en god dehydrator - det giver mere kontrol og går hurtigere. 
 
 Der er mange gode tips, tricks og opskrifter at hente fra [Backpacking Chef](https://www.backpackingchef.com/dehydrating-food.html) for både de helt nye og de garvede dehydratorer. 
 
@@ -97,7 +99,7 @@ En dagsration snacks for hver af os bestod typisk af:
 Vi havde købt og pakket stort set alle snacks hjemmefra. Det er nok unødvendigt, da det 1) er dyrt at sende, 2) næsten altid er muligt at handle når man henter depotkasser. De penge man sparer på at jage tilbud bliver hurtigt ædt af fragt, og man kan lettere variere og vælge hvad man har lyst til hvis man handler undervejs. 
 
 ## Kageopskrifter
-Kagerne og opskrifter er valgt efter at kunne fungere godt i kulden (ikke bare fryse til en stenhård klump), kunne holde sig længe, og for at være vældig simple at lave.
+Kagerne og opskrifter er valgt efter at kunne fungere godt i kulden (ikke bare fryse til en stenhård klump), kunne holde sig længe, og for at være vældig simple at lave. Alle kan fint skaleres op. 
 
 ### Svalbard brownie
 Opskrift taget fra [dn.no](https://www.dn.no/smak/oppskrifter/dessert/kake/sjokolade/brownies-som-aldri-fryser-svalbard-kaken/1-1-5583087) lavet af Sigrid Henjum.
