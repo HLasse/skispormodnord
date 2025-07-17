@@ -8,6 +8,7 @@ Denne side indeholder vores planlagte og faktiske ruter, samt nogle af de overve
 
 
 # Rute og ruteplanlægning
+Når du laver din egen rute, er det vigtigt at sætte sig ind i hvor der er mulighed for nødly, og hvad mulige plan B'er der findes. Lad derfor være med bare at kopiere andres rute, men brug tiden på at sætte dig ned før turen og lære landskabet og mulighederne at kende - det kan redde dit liv. 
 
 Vi brugte en blanding af [UT](https://ut.no){:target="_blank"} og [OutdoorActive](https://outdooractive.com){:target="_blank"} til at tegne ruter og lave GPX filer. UT er nice fordi den viser DNT's rutenet og hytter, men den dækker kun Norge. OutdoorActive dækker bredere, men kan være lidt mere vanskelig at tegne i (husk at brug deres "Topo" kort). 
 
@@ -22,6 +23,17 @@ Intet går jo som bekendt som planlagt. Den faktiske rute vi gik (med trace cirk
 Kortet herunder viser de individuelle dagsetaper.
 
 <iframe src="/assets/maps/faktisk_tur.html" width="100%" height="600" style="border:none;"></iframe>
+
+## Print af rute
+
+Vi brugte primært kort og kompas til navigation, og mest GPS for sikkerhed og til at dobbelttjekke ved tvivl. Det er et stort og tidskrævende arbejde at forberede kort til så lang en tur, men heldigvis findes der fine hjemmesider til at gøre dette. 
+
+I Norge brugte vi primært [kartmannen.no](https://kartmannen.no/kartutskrift/). Her kan du uploade en GPX fil, så du relativt nemt kan vælge det rigtige område at printe. Der er også funktioner til at vise brathed/skredfare, svækket is, skiruter, fodruter, og andet godt. Kortene skal laves én side ad gangen, så væbn dig med tålmodighed.
+
+På [Norgeskart](norgeskart.no) kan der også laves kort. Den laver 9 sider på en gang, så man får hurtigere dækket et større område. Til gengæld kræver det lidt oprydning at fjerne de sider der ikke er nødvendige. Er god da man også kan lave kort et stykke ind i Sverige. Understøtter ikke GPX.
+
+I Sverige brugte vi [Lantmäteriets](https://kartutskrift.lantmateriet.se/) tjeneste. Fungerer på mange måder lig Norgeskart - bare i Sverige. 
+
 
 # Depoter
 

@@ -5,7 +5,8 @@ title: Kontakt
 
 <link rel="stylesheet" href="{{ '/assets/css/contact-form.css' | relative_url }}">
 
-For spørgsmål eller forespørgsler om foredrag/oplæg, send os en besked med formularen herunder.
+Står du og har brug for et foredrag, mangler tips og sparring til en lignende tur, eller noget helt tredje? Send os besked med formularen herunder, så vender vi tilbage så hurtigt vi kan! 
+
 
 <div class="contact-form-container">
     <form action="https://public.herotofu.com/v1/303b9f30-6243-11f0-b5c2-1b1b69dd9a22" method="POST">

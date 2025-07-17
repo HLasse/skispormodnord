@@ -55,6 +55,16 @@ Grove opskrifter til fx frokost og aftensmad der følger 2:1:1 princippet ift. f
 | **Pad Thai**  | Nudler                             | Kikærter           | Blandede grøntsager                   | Pad thai sovs                              |
 
 
+Tabellen herunder viser 4 samle-selv opskrifter der fungerede ganske godt. Mængder er til aftensmad til 2 personer (320g tørret vægt i alt).
+
+| Ret | Ingredienser |
+|---|---|
+| Sojabolo | 160g pasta <br> 70g sojagranulat <br> 30g tomatpulver <br> 20g svampe <br> 10g løg <br> 10g gulerødder <br> 10g selleri <br> 10g peberfrugt <br> ½ tsk MSG <br> ½ tsk bagepulver <br> 1 tsk bouillonpulver <br> timian |
+| Butterbean pasta | 190g pasta <br> 50g butterbeans <br> 20g æggepulver <br> 20g blandet grønt <br> 10g spinat <br> 10g mælkepulver <br> 10g gærflager <br> 10g løg <br> krydder: hvidløgspulver, salt, timian <br> *revet parmesan til servering |
+| Dahl | 160g ris <br> 80g linser (grønner eller røde) <br> 20g kokospulver <br> 20g tomatpulver <br> 20g gulerødder <br> 20g blandet grønt <br> krydder: spidskommen bouillon, koriander |
+| Pasta carbonara | 190g pasta <br> 35g edamamebønner <br> 30g svampe <br> 20g æggepulver <br> 10g mælkepulver <br> 10g gærflager <br> 10g spinat <br> 10g løg <br> *revet parmesan til servering |
+
+
 ### Hjemmelavede retter
 
 De fleste gryderetter (der nemt kan skaleres op) fungerer fint tørre også. Vær obmærksom på ikke at bruge for meget fedtstof under tilberedningen da det kan modvirke tørringen, at hakke/skære alting fint, og ikke at komme for meget væske i (ellers tager det en evighed om at tørre). Brug også lidt mere krydderi end du plejer - maden mister smag ved tørring. 
