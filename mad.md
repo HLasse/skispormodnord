@@ -18,6 +18,7 @@ Vi valgte at tørre langt de meste af vores mad selv, i stedet for at købe frys
 * Spar dig selv for uendelig grøntsagsskæring og køb en stor pose tørrede grøntsager som supplement. Køb fx 5 kg TØRREDE grøntsager (40-50kg i frisk vægt) for omkring 300 kr. fra [bioshi24.eu](https://bioshi24.eu/en/products/dried-vegetables-5-kg-tola-95644?query_id=1){:target="_blank"}. Det tog godt en måneds tid før vi modtog vores bestilling, så vær ude i god tid! 
 * Lav en [pot cosy](https://outsite.dk/tips-og-tricks/laering-om-friluftsliv/kogegrej/1122-lav-en-pot-cozy){:target="_blank"} til dine gryder. Sparer tid og benzin ved at du bare skal bringe din mad i kog, og derefter kan det holde sig varmt og blive færdig i cosyen. 
 * Lav og tør så mange hele retter (fx chili sin carne, daal) som du kan nå - det er væsentligt mere lækkert end retter der består af individuelt tørrede komponenter. 
+* Toppings er en game-changer! Parmesan, gastromat, peanuts - masser af det! 
 </div>
 
 # Kalorieberegning
@@ -110,6 +111,8 @@ En dagsration snacks for hver af os bestod typisk af:
 * **Bland selv slik**. Man spiser ikke så meget af det, men det er hammerlækkert på tur. Stærk anbefaling til surt slik som kontrast til alt det søde man spiser. 
 
 Vi havde købt og pakket stort set alle snacks hjemmefra. Det er nok unødvendigt, da det 1) er dyrt at sende, 2) næsten altid er muligt at handle når man henter depotkasser. De penge man sparer på at jage tilbud bliver hurtigt ædt af fragt, og man kan lettere variere og vælge hvad man har lyst til hvis man handler undervejs. 
+
+Man bliver hurtigt lidt træt af alt det søde, så husk at tage fx chips og surt slik med til at veje lidt op for det! 
 
 ## Kageopskrifter
 Kagerne og opskrifter er valgt efter at kunne fungere godt i kulden (ikke bare fryse til en stenhård klump), kunne holde sig længe, og for at være vældig simple at lave. Alle kan fint skaleres op. 
