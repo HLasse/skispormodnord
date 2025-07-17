@@ -1,0 +1,48 @@
+<div class="contact-form-container">
+    <form action="https://public.herotofu.com/v1/303b9f30-6243-11f0-b5c2-1b1b69dd9a22" method="POST">
+        <div class="form-field floating-label">
+            <input
+                type="text"
+                name="name"
+                placeholder=" "
+                class="form-input"
+                required
+            />
+            <label>Dit navn</label>
+            <span class="input-icon">👤</span>
+        </div>
+        
+        <div class="form-field floating-label">
+            <input
+                type="email"
+                name="email"
+                placeholder=" "
+                class="form-input"
+                required
+            />
+            <label>Din email</label>
+            <span class="input-icon">✉️</span>
+        </div>
+        
+        <div class="form-field floating-label">
+            <textarea
+                name="message"
+                placeholder=" "
+                class="form-input"
+                required
+            ></textarea>
+            <label>Skriv din besked her</label>
+            <span class="input-icon">💬</span>
+        </div>
+        
+        <div class="form-field">
+            <button type="submit" class="form-button">
+                Send besked
+            </button>
+        </div>
+    </form>
+    
+    <div class="form-success" id="success-message">
+        Tak for din besked! Vi vender tilbage til dig snarest.
+    </div>
+</div>
