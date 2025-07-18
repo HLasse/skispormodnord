@@ -14,15 +14,47 @@ Vi brugte en blanding af [UT](https://ut.no){:target="_blank"} og [OutdoorActive
 
 På turen havde vi lagt ruterne ind på en GPS/nødsender samt på Topo GPS app'en på vores telefoner. Det gjorde det lidt nemmere at navigere under dårligere forhold, og at tegne nye/alternative ruter ind undervejs. 
 
-Du kan se de individuelle planlagte etaper på OutdoorActive [her](https://out.ac/IXaFqX){:target="_blank"}. En samlet GPX fil kan hentes [her](/assets/maps/sorted_npl_planlagt.gpx). 
+**Planlagt rute**
 
-Intet går jo som bekendt som planlagt. Den faktiske rute vi gik (med trace cirka hvert 30. minut) kan hentes som GPX fil [her](/assets/maps/sorted_NPL.gpx), eller ses på kortet herunder sammen med den planlagte rute. Du kan med fordel ændre kortet til "OSM topo (OpenTopoMap)" for bedre at se højder. 
+Se de individuelle etaper på OutdoorActive [her](https://out.ac/IXaFqX){:target="_blank"}. <br>
+Download en samlet GPX fil af vores planlagte rute [her](/assets/maps/sorted_npl_planlagt.gpx).
+{: .box-note}
+
+
+**Faktisk rute**
+
+{: .box-note}
+Download en GPX fil (med trace cirka hvert 30. minut) med vores faktiske rute [her](/assets/maps/sorted_NPL.gpx).
+
+Intet går jo som bekendt som planlagt. Den faktiske rute vi gik kan ses på kortet herunder sammen med den planlagte rute. Du kan med fordel ændre kortet til "OSM topo (OpenTopoMap)" for bedre at se højder. 
 
 <iframe src="/assets/maps/faktisk_planlagt.html" width="100%" height="600" style="border:none;"></iframe>
 
-Kortet herunder viser de individuelle dagsetaper.
+Kortet herunder viser de individuelle dagsetaper. Hold musen over dagsetaperne/datoen i siden for at highlight etapen på kortet. 
 
 <iframe src="/assets/maps/faktisk_tur.html" width="100%" height="600" style="border:none;"></iframe>
+
+## Inspiration og ressourcer
+Der er mange andre gode folk der har delt deres Norge på langs oplevelser og ruter, som vi har taget meget inspiration fra. Tjek fx:
+
+* [norgepålangs.info](https://norgepaalangs.info/): En samlet oversigt over de fleste der har gået Norge på langs. Indeholder information om tidsforbrug, links til andres blogge mv. 
+* [bergits.no](https://bergits.no/category/norge-pa-langs/): Gik Norge på langs i etaper over både sommer og vinter 2018-2019. God information om rutevalg. 
+* [breogfjellsport.com](https://breogfjellsport.com/npl/ruta/pagesd41c.html?pageID=50): Gik Norge på langs vinter 2006. Noget information er forældet, men god info og overvejelser om rute - både før og efter turen. 
+* [norgepalangsdeluxe](https://norgepalangsdeluxe.wordpress.com/valkommen/fardvag/): Planlagt vinterrute.
+* [paalangs2013](https://paalangs2013.wordpress.com/2012/11/15/planlagt-rute/): Planlagt vinterrute.
+* [hikingnorth](https://hikingnorth.no/): Går NPL sommer 2025 men meget detaljeret information om ruteplanlægning, depoter, osv.
+
+Derudover er disse sider uundværlige til både planlægning og undervejs på turen:
+
+* [skisporet.no](https://www.skisporet.no): Live-status og lokation af præparerede langrendsløyper i Norge.
+* [varsom.no](https://www.varsom.no/): Skred- og isvarsler i Norge.
+* [ut.no](https://ut.no/): Kort, DNT-hytteoversigt, og turforslag i hele Norge.
+* [snøscooterløyper.no](https://www.snoscooterloyper.no/kart): Information om snøscooterløyper i Norge. 
+* [BRP GO (app)](https://www.brp-world.com/dk/da/voresprodukter/can-am-on-road/brugertricks/brp-go-app.html): App til at se snescooterløyper. Kan hente offline kort.
+* [skoterleder.org](https://skoterleder.org/): Kort over svenske snescooterløyper.
+* [inatur.no](https://www.inatur.no/): Udleje af fjeldhytter i Norge. For det meste samme standard som DNT, bare privat. 
+* [längdspår.se](https://www.xn--lngdspr-5wao.se/). Langrendsløyper i primært midt- og Sydsverige.
+* [skoterspår.se](https://www.xn--skoterspr-d3a.se/?lat=63.650671002638774&lng=12.580849839854636&zoom=4.5). Snescooterløyper i Midtnorge.
 
 ## Print af rute
 
