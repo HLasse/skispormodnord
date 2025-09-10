@@ -15,5 +15,10 @@ gem 'bigdecimal'
 gem 'logger'
 # jekyll toc plugin
 gem 'jekyll-toc'
+gem 'observer'
+gem "exifr"
+gem "mini_magick"
+
+
 gemspec
 

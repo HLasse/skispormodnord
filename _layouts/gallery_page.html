@@ -1,0 +1,72 @@
+---
+layout: page
+title: "Galleri"
+---
+
+<div class="gallery">
+  {% for media in page.images %}
+    {% if media.type == "image" %}
+      <div class="thumb">
+        <a data-fancybox="galleri" href="/{{ media.path }}" data-caption="{{ media.name }}">
+          <img src="/galleri/thumbs/{{ media.name }}" alt="{{ media.name }}">
+        </a>
+      </div>
+    {% elsif media.type == "video" %}
+      <div class="thumb video-thumb">
+        <a data-fancybox="galleri" href="/{{ media.path }}" data-caption="{{ media.name }}">
+          <img src="/galleri/thumbs/{{ media.name | replace: '.mp4','-thumb.jpg' | replace: '.mov','-thumb.jpg' | replace: '.webm','-thumb.jpg' }}" alt="Video: {{ media.name }}">
+          <span class="play-icon">&#9658;</span>
+        </a>
+      </div>
+    {% endif %}
+  {% endfor %}
+</div>
+
+
+
+<style>
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr); /* 2 per row */
+  gap: 20px;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.thumb {
+  position: relative;
+}
+
+.thumb img {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: transform 0.2s ease;
+}
+
+.thumb img:hover {
+  transform: scale(1.05);
+}
+
+.video-thumb .play-icon {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 48px;
+  color: white;
+  text-shadow: 0 0 10px rgba(0,0,0,0.7);
+  pointer-events: none; /* let clicks pass through */
+}
+
+/* Smaller screens: stack */
+@media (max-width: 600px) {
+  .gallery {
+    grid-template-columns: 1fr;
+    gap: 15px;
+  }
+}
+</style>
+

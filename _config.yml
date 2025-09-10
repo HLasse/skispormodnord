@@ -24,6 +24,7 @@ navbar-links:
   Rute: "rute"
   Udstyr: "udstyr"
   Mad: "mad"
+  Galleri: "galleri"
   Om os: "om"
   Foredrag/kontakt: "kontakt"
   # Resources:
@@ -297,6 +298,7 @@ exclude:
   - README.md
   - screenshot.png
   - docs/
+  - galleri/thumbs
 
 plugins:
   - jekyll-paginate
