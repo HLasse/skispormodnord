@@ -4,7 +4,7 @@ title: Udstyr
 toc: true
 ---
 
-Der er mange holdninger til udstyr og beklædning. Dette er vores personlige pakkeliste og erfaringer, men der findes mange andre gode og mere udførlige beskrivelser af grej til vintertur. Vores basisvægt per mand (inkl. pulk, ekls. mad) lå på omkring 40-45kg. Læg 20-25 kg på i mad efter depot. 
+Der er mange holdninger til udstyr og beklædning. Dette er vores personlige pakkeliste og erfaringer, men der findes mange andre gode og mere udførlige beskrivelser af grej til vintertur. Vores basisvægt per person (inkl. pulk, ekls. mad) lå på omkring 40-45kg. Læg 20-25 kg på i mad efter depot. 
 
 ## Lejrudstyr 
 

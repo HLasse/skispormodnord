@@ -28,7 +28,7 @@ Vi valgte at tørre langt de meste af vores mad selv, i stedet for at købe frys
 
 Man forbrænder omkring 5-6.000 kcal om dagen på vinterfjeldet når man går og trækker en pulk. Det er et ret stort tal, der er rimelig abstrakt at forholde sig til. For at få et overblik over maden, lavede vi et [dagsrations-overblik](https://docs.google.com/spreadsheets/d/1yg3VWl8bsJvdRw4mFbybAlaH122k6xjRKysO4DMf_ns/edit?usp=sharing){:target="_blank"}, og en [indkøbsberegner](https://docs.google.com/spreadsheets/d/1VpDuyQLr5HqaU8dvbbAGRBU1raUThUHsoU0tHqOJAnI/edit?usp=sharing){:target="_blank"}. Vi er ikke de store excel-hajer (🐍), så bær over med de grimme ark - forhåbentlig kan de hjælpe med at komme i gang! Vær obmærksom på, at man ikke kan spise så meget de første 2-3 uger som man kan efterfølgende. Beregn derfor ~1000 færre kcal om dagen den første tid. 
 
-[Dagsrations-overblikket](https://docs.google.com/spreadsheets/d/1yg3VWl8bsJvdRw4mFbybAlaH122k6xjRKysO4DMf_ns/edit?usp=sharing){:target="_blank"} giver en fornemmelse af, hvor mange snacks og hvor meget mad der skal til. Vi havde underestimeret vores kalorier (ligger lige under 5.000 i beregneren), og tabte os ret voldsomt den første måned. Vi justerede det daglige smør indtag til 150g pr. mand, og tilføjede ~100g ekstra nødder om dagen og så var alting bedre. 
+[Dagsrations-overblikket](https://docs.google.com/spreadsheets/d/1yg3VWl8bsJvdRw4mFbybAlaH122k6xjRKysO4DMf_ns/edit?usp=sharing){:target="_blank"} giver en fornemmelse af, hvor mange snacks og hvor meget mad der skal til. Vi havde underestimeret vores kalorier (ligger lige under 5.000 i beregneren), og tabte os ret voldsomt den første måned. Vi justerede det daglige smør indtag til 150g pr. person, og tilføjede ~100g ekstra nødder om dagen og så var alting bedre. 
 
 [Indkøbsberegneren](https://docs.google.com/spreadsheets/d/1VpDuyQLr5HqaU8dvbbAGRBU1raUThUHsoU0tHqOJAnI/edit?usp=sharing){:target="_blank"} kan være et startsted til at finde ud af hvor meget mad af forskellig art der skal handles og tørres. En 5 dl madtermos kan indeholde ca. 120g tørret mad (+ en ordentlig smørklat), så det var vores udgangspunkt for frokost. Aftensmaden blev lavet i en gryde som vi satte i en cosy efter et opkog, så der blev portionerne lidt større (180g pr. person). Indkøbsberegneren er bestemt ikke et færdigt værktøj - det bærer kraftigt præg af en lidt forhastet forberedelse - men måske du kan bruge det som inspiration eller til at få et groft overblik.
 
@@ -38,9 +38,9 @@ Til morgenmad spiste vi hver dag havregrødsvariationer. Som base havde de 80g h
  
 Alle frokoster blev lavet ved at blande forskellige tørrede ingredienser sammen i forholdet 2 dele kulhydrat (couscous/ris/pasta/...), 1 del protein (linser/bønner/sojagranulat/...) og 1 del grøntsager (gulerødder/svampe/løg/...) til totalt 120g. Derefter tilsatte vi forskellige krydderier og smagsgivere som kokos- eller æggepulver. Passer perfekt i en 1l zip-lock pose.
 
-Aftensmåltiderne der ikke var retter der var blevet forberedt og tørret hjemmefra blev lavet efter samme opskrift som frokosterne, bare med 180g tørrede ingredienser pr. mand i stedet for 120. 
+Aftensmåltiderne der ikke var retter der var blevet forberedt og tørret hjemmefra blev lavet efter samme opskrift som frokosterne, bare med 180g tørrede ingredienser pr. person i stedet for 120. 
 
-Alle hovedmåltider blev spædet op med en ordentlig røvfuld smør: 100-150g pr. mand fordelt på de 3 måltider. 
+Alle hovedmåltider blev spædet op med en ordentlig røvfuld smør: 100-150g pr. person fordelt på de 3 måltider. 
 
 ## Opskrifter
 
