@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GPX Map Sheets</title>
+    <link rel="stylesheet" href="style.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div class="app">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">GPX to multi-page topo PDF</p>
+          <h1>Print-ready map sheets from your GPX track.</h1>
+          <p class="lead">
+            Upload a GPX, choose scale and paper, and export a multi-page PDF with Kartverket base maps and a tracked route.
+          </p>
+        </div>
+      </header>
+
+      <section class="panel">
+        <form id="controls" class="controls">
+          <div class="upload">
+            <span class="field-title">GPX upload</span>
+            <label class="dropzone" id="dropzone">
+              <input type="file" id="gpxFile" accept=".gpx" required />
+              <div>
+                <strong>Drop your GPX here</strong>
+                <span>or click to browse files</span>
+              </div>
+            </label>
+            <div id="fileMeta" class="file-meta hidden"></div>
+          </div>
+
+          <div class="control-section">
+            <div class="section-header">
+              <span>Map layout</span>
+            </div>
+            <div class="section-grid">
+              <label class="field">
+                <span>Paper size</span>
+                <div class="segmented" role="group" aria-label="Paper size">
+                  <button type="button" data-paper="A3">A3</button>
+                  <button type="button" data-paper="A4" class="active">A4</button>
+                  <button type="button" data-paper="A5">A5</button>
+                </div>
+              </label>
+
+              <label class="field">
+                <span>Scale</span>
+                <div class="segmented" role="group" aria-label="Scale">
+                  <button type="button" data-scale="25000">1:25 000</button>
+                  <button type="button" data-scale="50000" class="active">
+                    1:50 000
+                  </button>
+                  <button type="button" data-scale="100000">1:100 000</button>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <div class="control-section">
+            <div class="section-header">
+              <span>Advanced</span>
+            </div>
+            <div class="section-grid">
+              <label class="field">
+                <span>
+                  Overlap (%)
+                  <span class="tooltip" title="Overlap between adjacent pages. Higher values create more shared area.">?</span>
+                </span>
+                <input
+                  type="number"
+                  id="overlap"
+                  min="0"
+                  max="90"
+                  step="1"
+                  value="5"
+                  required
+                />
+              </label>
+            </div>
+          </div>
+
+          <button id="renderBtn" type="submit" class="primary" disabled>
+            Generate map PDF
+          </button>
+        </form>
+
+        <ol class="progress" id="progress">
+          <li data-step="1" class="active">Upload GPX</li>
+          <li data-step="2">Choose layout</li>
+          <li data-step="3">Generate PDF</li>
+        </ol>
+        <div class="status" id="status">
+          <span class="spinner hidden" id="spinner"></span>
+          <span id="statusText">Ready when GPX is uploaded.</span>
+        </div>
+        <div class="actions">
+          <a id="downloadLink" class="download disabled" href="#">
+            Download PDF
+          </a>
+        </div>
+      </section>
+
+      <section class="preview" id="preview">
+        <div class="preview-header">
+          <h2>Preview</h2>
+          <p>Low-res thumbnails of each generated page.</p>
+        </div>
+        <div id="previewGrid" class="preview-grid"></div>
+      </section>
+    </div>
+
+    <script type="module" src="main.js"></script>
+  </body>
+</html>
