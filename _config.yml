@@ -27,6 +27,7 @@ navbar-links:
   Galleri: "galleri"
   Om os: "om"
   Foredrag/kontakt: "kontakt"
+  Lav turkort: "kort"
   # Resources:
   #   - Beautiful Jekyll: "https://beautifuljekyll.com"
   #   - Learn markdown: "https://www.markdowntutorial.com/"
@@ -299,7 +300,7 @@ exclude:
   - screenshot.png
   - docs/
   - galleri/thumbs
-  
+
 
 plugins:
   - jekyll-paginate
