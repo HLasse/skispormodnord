@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>GPX Map Sheets</title>
+    <title>GPX-kortark</title>
     <link rel="stylesheet" href="style.css" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -16,23 +16,23 @@
     <div class="app">
       <header class="hero">
         <div>
-          <p class="eyebrow">GPX to multi-page topo PDF</p>
-          <h1>Print-ready map sheets from your GPX track.</h1>
+          <h1>Print-klar turkort fra dit GPX-spor.</h1>
           <p class="lead">
-            Upload a GPX, choose scale and paper, and export a multi-page PDF with Kartverket base maps and a tracked route.
+            Upload en GPX fil, vælg målestok og papirstørrelse, og eksportér en flersidet PDF med Kartverket-kort og dit spor.
           </p>
+          <p class="lead">Bemærk: Kort kan kun laves for Norge i øjeblikket.</p>
         </div>
       </header>
 
       <section class="panel">
         <form id="controls" class="controls">
           <div class="upload">
-            <span class="field-title">GPX upload</span>
+            <span class="field-title">GPX-upload</span>
             <label class="dropzone" id="dropzone">
               <input type="file" id="gpxFile" accept=".gpx" required />
               <div>
-                <strong>Drop your GPX here</strong>
-                <span>or click to browse files</span>
+                <strong>Træk din GPX her</strong>
+                <span>eller klik for at vælge fil</span>
               </div>
             </label>
             <div id="fileMeta" class="file-meta hidden"></div>
@@ -40,12 +40,12 @@
 
           <div class="control-section">
             <div class="section-header">
-              <span>Map layout</span>
+              <span>Kortlayout</span>
             </div>
             <div class="section-grid">
               <label class="field">
-                <span>Paper size</span>
-                <div class="segmented" role="group" aria-label="Paper size">
+                <span>Papirstørrelse</span>
+                <div class="segmented" role="group" aria-label="Papirstørrelse">
                   <button type="button" data-paper="A3">A3</button>
                   <button type="button" data-paper="A4" class="active">A4</button>
                   <button type="button" data-paper="A5">A5</button>
@@ -53,8 +53,8 @@
               </label>
 
               <label class="field">
-                <span>Scale</span>
-                <div class="segmented" role="group" aria-label="Scale">
+                <span>Målestok</span>
+                <div class="segmented" role="group" aria-label="Målestok">
                   <button type="button" data-scale="25000">1:25 000</button>
                   <button type="button" data-scale="50000" class="active">
                     1:50 000
@@ -62,45 +62,67 @@
                   <button type="button" data-scale="100000">1:100 000</button>
                 </div>
               </label>
-            </div>
-          </div>
 
-          <div class="control-section">
-            <div class="section-header">
-              <span>Advanced</span>
-            </div>
-            <div class="section-grid">
               <label class="field">
-                <span>
-                  Overlap (%)
-                  <span class="tooltip" title="Overlap between adjacent pages. Higher values create more shared area.">?</span>
-                </span>
-                <input
-                  type="number"
-                  id="overlap"
-                  min="0"
-                  max="90"
-                  step="1"
-                  value="5"
-                  required
-                />
+                <span>Orientering</span>
+                <div class="segmented" role="group" aria-label="Orientering">
+                  <button type="button" data-orientation="portrait" class="active">
+                    Portræt
+                  </button>
+                  <button type="button" data-orientation="landscape">
+                    Landskab
+                  </button>
+                </div>
               </label>
             </div>
           </div>
 
+          <div class="control-section">
+            <details class="advanced">
+              <summary>Avanceret</summary>
+              <div class="section-grid">
+                <label class="field">
+                  <span>
+                    Overlap (%)
+                    <span
+                      class="tooltip"
+                      data-tooltip="Overlap mellem tilstødende sider. Højere værdier giver mere fælles område."
+                      aria-label="Overlap mellem tilstødende sider. Højere værdier giver mere fælles område."
+                    >?</span>
+                  </span>
+                  <input
+                    type="number"
+                    id="overlap"
+                    min="0"
+                    max="90"
+                    step="1"
+                    value="5"
+                    required
+                  />
+                </label>
+
+                <label class="field">
+                  <span>Magnetisk deklination (per side)</span>
+                  <input type="checkbox" id="declinationToggle" checked />
+                </label>
+              </div>
+            </details>
+          </div>
+
           <button id="renderBtn" type="submit" class="primary" disabled>
-            Generate map PDF
+            Lav kort-PDF
           </button>
         </form>
 
         <ol class="progress" id="progress">
           <li data-step="1" class="active">Upload GPX</li>
-          <li data-step="2">Choose layout</li>
-          <li data-step="3">Generate PDF</li>
+          <li data-step="2">Vælg layout</li>
+          <li data-step="3">Generér PDF</li>
         </ol>
         <div class="status" id="status">
           <span class="spinner hidden" id="spinner"></span>
-          <span id="statusText">Ready when GPX is uploaded.</span>
+          <span id="statusText">Klar når GPX er uploadet.</span>
+          <progress id="renderProgress" value="0" max="1" class="render-progress hidden"></progress>
         </div>
         <div class="actions">
           <a id="downloadLink" class="download disabled" href="#">
@@ -109,13 +131,27 @@
         </div>
       </section>
 
-      <section class="preview" id="preview">
+      <section class="preview hidden" id="preview">
         <div class="preview-header">
-          <h2>Preview</h2>
-          <p>Low-res thumbnails of each generated page.</p>
+          <h2>Forhåndsvisning</h2>
         </div>
         <div id="previewGrid" class="preview-grid"></div>
       </section>
+    </div>
+
+    <div id="viewer" class="viewer hidden" role="dialog" aria-modal="true">
+      <button class="viewer-close" id="viewerClose" aria-label="Luk forhåndsvisning">✕</button>
+      <button class="viewer-nav prev" id="viewerPrev" aria-label="Forrige side">‹</button>
+      <div class="viewer-stage" id="viewerStage">
+        <img id="viewerImage" alt="Forhåndsvisning af side" />
+      </div>
+      <button class="viewer-nav next" id="viewerNext" aria-label="Næste side">›</button>
+      <div class="viewer-controls">
+        <button id="viewerZoomOut" aria-label="Zoom ud">−</button>
+        <button id="viewerZoomReset" aria-label="Nulstil zoom">Tilpas</button>
+        <button id="viewerZoomIn" aria-label="Zoom ind">+</button>
+      </div>
+      <div class="viewer-caption" id="viewerCaption"></div>
     </div>
 
     <script type="module" src="main.js"></script>

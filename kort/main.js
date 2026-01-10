@@ -1,13 +1,30 @@
 import proj4 from "https://cdn.jsdelivr.net/npm/proj4@2.9.0/+esm";
+import geomagnetism from "https://cdn.jsdelivr.net/npm/geomagnetism@0.2.0/+esm";
 import { PDFDocument } from "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/+esm";
 
 const WMS_BASE_URL = "https://wms.geonorge.no/skwms1/wms.topo";
 const WMS_GRID_URL = "https://wms.geonorge.no/skwms1/wms.rutenett";
-const DEFAULT_LAYER = "topo";
+
+// Kartverket cache (WMTS/XYZ-style REST endpoints)
+// Capabilities are documented here: https://cache.kartverket.no/
+const WMTS_CAPABILITIES_URL =
+  "https://cache.kartverket.no/v1/wmts/1.0.0/WMTSCapabilities.xml";
+const WMTS_BASE_URL = "https://cache.kartverket.no/v1/wmts/1.0.0";
+
+// "toporaster" is Kartverket's topo raster/turkart layer.
+// Other layers: topo, topograatone, sjokartraster.
+const DEFAULT_LAYER = "toporaster";
 const GRID_LAYER = "1km_rutelinje";
+
+// For PDF export, WMTS requires stitching many tiles. If a page would require
+// too many tiles at the highest zoom, we automatically step down.
+const WMTS_MAX_TILES_PER_PAGE = 120;
+const WMTS_TILE_SIZE = 256;
+const USE_WMTS_FOR_BASEMAP = true;
 const DEFAULT_DPI = 300;
 const DEFAULT_OVERLAP = 0.05;
 const TRACK_STROKE_PX = 4;
+const PAGE_RENDER_CONCURRENCY = 2;
 const PAPER_SIZES_MM = {
   A5: [148.0, 210.0],
   A4: [210.0, 297.0],
@@ -23,24 +40,57 @@ const dropzoneEl = document.getElementById("dropzone");
 const previewGrid = document.getElementById("previewGrid");
 const downloadLink = document.getElementById("downloadLink");
 const renderBtn = document.getElementById("renderBtn");
+const previewSection = document.getElementById("preview");
+const renderProgressEl = document.getElementById("renderProgress");
+const viewerEl = document.getElementById("viewer");
+const viewerImageEl = document.getElementById("viewerImage");
+const viewerCaptionEl = document.getElementById("viewerCaption");
+const viewerCloseEl = document.getElementById("viewerClose");
+const viewerPrevEl = document.getElementById("viewerPrev");
+const viewerNextEl = document.getElementById("viewerNext");
+const viewerStageEl = document.getElementById("viewerStage");
+const viewerZoomOutEl = document.getElementById("viewerZoomOut");
+const viewerZoomResetEl = document.getElementById("viewerZoomReset");
+const viewerZoomInEl = document.getElementById("viewerZoomIn");
 
 const selections = {
   paper: "A4",
   scale: 50000,
+  orientation: "portrait",
 };
 
 let selectedFile = null;
 let cachedPoints = null;
 let hasGenerated = false;
+let viewerUrls = [];
+let previewUrls = [];
+let downloadUrl = null;
+let viewerIndex = 0;
+let viewerZoom = 1;
+let viewerBaseSize = { width: 0, height: 0 };
 
 function setStatus(message, isLoading = false) {
   statusTextEl.textContent = message;
   spinnerEl.classList.toggle("hidden", !isLoading);
 }
 
+function setRenderProgress(completed, total, visible) {
+  if (!renderProgressEl) return;
+  if (visible) {
+    renderProgressEl.max = Math.max(total, 1);
+    renderProgressEl.value = Math.min(completed, total);
+    renderProgressEl.classList.remove("hidden");
+  } else {
+    renderProgressEl.classList.add("hidden");
+  }
+}
+
 function setDownload(blob) {
-  const url = URL.createObjectURL(blob);
-  downloadLink.href = url;
+  if (downloadUrl) {
+    URL.revokeObjectURL(downloadUrl);
+  }
+  downloadUrl = URL.createObjectURL(blob);
+  downloadLink.href = downloadUrl;
   downloadLink.download = "trail_map.pdf";
   downloadLink.classList.remove("disabled");
 }
@@ -49,6 +99,17 @@ function clearPreview() {
   previewGrid.innerHTML = "";
   downloadLink.classList.add("disabled");
   downloadLink.removeAttribute("href");
+  viewerUrls.forEach((url) => URL.revokeObjectURL(url));
+  viewerUrls = [];
+  previewUrls.forEach((url) => URL.revokeObjectURL(url));
+  previewUrls = [];
+  if (downloadUrl) {
+    URL.revokeObjectURL(downloadUrl);
+    downloadUrl = null;
+  }
+  viewerIndex = 0;
+  viewerZoom = 1;
+  setRenderProgress(0, 1, false);
 }
 
 function setProgress(activeStep, doneSteps) {
@@ -67,8 +128,9 @@ function setSegmentedActive(group, value, attr) {
 }
 
 function setupSegmentedControls() {
-  const paperGroup = document.querySelector("[aria-label='Paper size']");
-  const scaleGroup = document.querySelector("[aria-label='Scale']");
+  const paperGroup = document.querySelector("[aria-label='Papirstørrelse']");
+  const scaleGroup = document.querySelector("[aria-label='Målestok']");
+  const orientationGroup = document.querySelector("[aria-label='Orientering']");
 
   paperGroup.addEventListener("click", (event) => {
     const button = event.target.closest("button");
@@ -83,6 +145,17 @@ function setupSegmentedControls() {
     selections.scale = Number(button.dataset.scale);
     setSegmentedActive(scaleGroup, String(selections.scale), "scale");
   });
+
+  orientationGroup.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    selections.orientation = button.dataset.orientation;
+    setSegmentedActive(
+      orientationGroup,
+      String(selections.orientation),
+      "orientation"
+    );
+  });
 }
 
 function parseGPX(xmlText) {
@@ -95,7 +168,7 @@ function parseGPX(xmlText) {
   });
 
   if (!points.length) {
-    throw new Error("No track points found in GPX file.");
+    throw new Error("Ingen sporpunkt fundet i GPX-filen.");
   }
   return points;
 }
@@ -150,11 +223,19 @@ function projectPoints(pointsLonLat, transformer) {
   return { xs, ys };
 }
 
+function minMax(values) {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const value of values) {
+    if (value < min) min = value;
+    if (value > max) max = value;
+  }
+  return { min, max };
+}
+
 function bboxFromPoints(xs, ys) {
-  const minx = Math.min(...xs);
-  const maxx = Math.max(...xs);
-  const miny = Math.min(...ys);
-  const maxy = Math.max(...ys);
+  const { min: minx, max: maxx } = minMax(xs);
+  const { min: miny, max: maxy } = minMax(ys);
   return [minx, miny, maxx, maxy];
 }
 
@@ -162,18 +243,26 @@ function groundResolutionMPerPx(scale, dpi) {
   return (scale * 0.0254) / dpi;
 }
 
-function paperPixels(paper, dpi) {
+function paperDimensionsMm(paper, orientation) {
   if (!(paper in PAPER_SIZES_MM)) {
-    throw new Error(`Unsupported paper size: ${paper}`);
+    throw new Error(`Ikke understøttet papirstørrelse: ${paper}`);
   }
-  const [wMm, hMm] = PAPER_SIZES_MM[paper];
+  let [wMm, hMm] = PAPER_SIZES_MM[paper];
+  if (orientation === "landscape") {
+    [wMm, hMm] = [hMm, wMm];
+  }
+  return [wMm, hMm];
+}
+
+function paperPixels(paper, dpi, orientation) {
+  const [wMm, hMm] = paperDimensionsMm(paper, orientation);
   const wPx = Math.round((wMm / 25.4) * dpi);
   const hPx = Math.round((hMm / 25.4) * dpi);
   return [wPx, hPx];
 }
 
-function pageGroundSpan(scale, dpi, paper) {
-  const [wPx, hPx] = paperPixels(paper, dpi);
+function pageGroundSpan(scale, dpi, paper, orientation) {
+  const [wPx, hPx] = paperPixels(paper, dpi, orientation);
   const res = groundResolutionMPerPx(scale, dpi);
   const wM = wPx * res;
   const hM = hPx * res;
@@ -228,22 +317,26 @@ function pageTrackIndex(pageBBox, xs, ys) {
 
 function recenterPageBBox(pageBBox, xs, ys, pageWM, pageHM) {
   const [minx, miny, maxx, maxy] = pageBBox;
-  const ptsIn = [];
+  let minInX = Infinity;
+  let maxInX = -Infinity;
+  let minInY = Infinity;
+  let maxInY = -Infinity;
   for (let i = 0; i < xs.length; i += 1) {
     const x = xs[i];
     const y = ys[i];
     if (minx <= x && x <= maxx && miny <= y && y <= maxy) {
-      ptsIn.push([x, y]);
+      if (x < minInX) minInX = x;
+      if (x > maxInX) maxInX = x;
+      if (y < minInY) minInY = y;
+      if (y > maxInY) maxInY = y;
     }
   }
-  if (!ptsIn.length) {
+  if (!Number.isFinite(minInX) || !Number.isFinite(minInY)) {
     return pageBBox;
   }
 
-  const xsIn = ptsIn.map((p) => p[0]);
-  const ysIn = ptsIn.map((p) => p[1]);
-  const cx = (Math.min(...xsIn) + Math.max(...xsIn)) / 2.0;
-  const cy = (Math.min(...ysIn) + Math.max(...ysIn)) / 2.0;
+  const cx = (minInX + maxInX) / 2.0;
+  const cy = (minInY + maxInY) / 2.0;
 
   const newMinx = cx - pageWM / 2.0;
   const newMaxx = cx + pageWM / 2.0;
@@ -313,11 +406,235 @@ async function fetchWmsImage({ baseUrl, layer, styles, format, transparent }, bb
   const url = `${baseUrl}?${params.toString()}`;
   const response = await fetch(url, { mode: "cors" });
   if (!response.ok) {
-    throw new Error(`WMS request failed (${response.status}).`);
+    throw new Error(`WMS-forespørgsel fejlede (${response.status}).`);
   }
 
   const blob = await response.blob();
   return createImageBitmap(blob);
+}
+
+const wmtsConfigCache = new Map();
+
+function tileMatrixSetIdFromEpsg(epsgCode) {
+  // Kartverket cache supports: webmercator, utm32n, utm33n, utm35n
+  if (epsgCode === 25832) return "utm32n";
+  if (epsgCode === 25833) return "utm33n";
+  if (epsgCode === 25835) return "utm35n";
+  // Fallback: use webmercator if someone ends up outside those zones.
+  return "webmercator";
+}
+
+function textContentOrNull(el, selector) {
+  const node = el.querySelector(selector);
+  return node ? node.textContent : null;
+}
+
+function parseCorner(str) {
+  // "x y" (space-separated)
+  if (!str) return null;
+  const parts = str.trim().split(/\s+/).map(Number);
+  if (parts.length < 2 || parts.some((n) => !Number.isFinite(n))) return null;
+  return [parts[0], parts[1]];
+}
+
+async function getWmtsTileMatrixSet(tileMatrixSetId) {
+  if (wmtsConfigCache.has(tileMatrixSetId)) return wmtsConfigCache.get(tileMatrixSetId);
+
+  const res = await fetch(WMTS_CAPABILITIES_URL, { mode: "cors" });
+  if (!res.ok) {
+    throw new Error(`WMTS GetCapabilities fejlede (${res.status}).`);
+  }
+  const xmlText = await res.text();
+  const doc = new DOMParser().parseFromString(xmlText, "application/xml");
+
+  // Find TileMatrixSet by identifier
+  const sets = Array.from(doc.querySelectorAll("TileMatrixSet"));
+  const setEl = sets.find((s) => textContentOrNull(s, "Identifier") === tileMatrixSetId);
+  if (!setEl) {
+    throw new Error(`WMTS TileMatrixSet ikke fundet: ${tileMatrixSetId}`);
+  }
+
+  const matrices = Array.from(setEl.querySelectorAll("TileMatrix")).map((m) => {
+    const id = textContentOrNull(m, "Identifier");
+    const scaleDen = Number(textContentOrNull(m, "ScaleDenominator"));
+    const topLeft = parseCorner(textContentOrNull(m, "TopLeftCorner"));
+    const tileW = Number(textContentOrNull(m, "TileWidth"));
+    const tileH = Number(textContentOrNull(m, "TileHeight"));
+    const matrixW = Number(textContentOrNull(m, "MatrixWidth"));
+    const matrixH = Number(textContentOrNull(m, "MatrixHeight"));
+    if (!id || !Number.isFinite(scaleDen) || !topLeft) return null;
+    return {
+      id,
+      scaleDenominator: scaleDen,
+      topLeftCorner: topLeft, // [x, y]
+      tileWidth: Number.isFinite(tileW) ? tileW : WMTS_TILE_SIZE,
+      tileHeight: Number.isFinite(tileH) ? tileH : WMTS_TILE_SIZE,
+      matrixWidth: matrixW,
+      matrixHeight: matrixH,
+    };
+  }).filter(Boolean);
+
+  if (!matrices.length) {
+    throw new Error(`Ingen TileMatrix fundet for ${tileMatrixSetId}.`);
+  }
+
+  // Sort by increasing scaleDenominator (more zoomed in = smaller scaleDen)
+  matrices.sort((a, b) => a.scaleDenominator - b.scaleDenominator);
+
+  const config = { tileMatrixSetId, matrices };
+  wmtsConfigCache.set(tileMatrixSetId, config);
+  return config;
+}
+
+function metersPerPixelFromScaleDenominator(scaleDenominator) {
+  // OGC WMTS uses "pixel size" = 0.00028m for scale denominator.
+  // resolution (m/px) = scaleDenominator * 0.00028
+  return scaleDenominator * 0.00028;
+}
+
+function chooseBestMatrix(matrices, desiredMPerPx, maxTiles) {
+  // Start with the most zoomed-in matrix (smallest m/px) that still makes sense.
+  // If it would require too many tiles for the requested bbox/output, step down.
+  // We pick the highest detail with m/px <= desiredMPerPx if possible; otherwise the closest.
+
+  // First pick by resolution
+  let chosen = matrices[0];
+  let bestDiff = Infinity;
+  for (const m of matrices) {
+    const res = metersPerPixelFromScaleDenominator(m.scaleDenominator);
+    const diff = Math.abs(Math.log(res / desiredMPerPx));
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      chosen = m;
+    }
+  }
+
+  // We'll return an index so we can step to less detailed (larger m/px)
+  const startIndex = matrices.indexOf(chosen);
+  return { startIndex };
+}
+
+function tileRangeForBBox(bbox, matrix) {
+  const [minx, miny, maxx, maxy] = bbox;
+  const res = metersPerPixelFromScaleDenominator(matrix.scaleDenominator);
+
+  const originX = matrix.topLeftCorner[0];
+  const originY = matrix.topLeftCorner[1];
+
+  // In WMTS, TileRow increases downward from top-left origin.
+  const tileSpanX = matrix.tileWidth * res;
+  const tileSpanY = matrix.tileHeight * res;
+
+  const minCol = Math.floor((minx - originX) / tileSpanX);
+  const maxCol = Math.floor((maxx - originX) / tileSpanX);
+
+  const minRow = Math.floor((originY - maxy) / tileSpanY);
+  const maxRow = Math.floor((originY - miny) / tileSpanY);
+
+  return {
+    minCol,
+    maxCol,
+    minRow,
+    maxRow,
+    tileSpanX,
+    tileSpanY,
+    res,
+  };
+}
+
+async function fetchTileBitmap(url) {
+  const r = await fetch(url, { mode: "cors" });
+  if (!r.ok) throw new Error(`WMTS tile fejlede (${r.status}).`);
+  const b = await r.blob();
+  return createImageBitmap(b);
+}
+
+async function fetchWmtsStitchedImage(bbox, widthPx, heightPx, epsgCode, layerId) {
+  const tileMatrixSetId = tileMatrixSetIdFromEpsg(epsgCode);
+  const { matrices } = await getWmtsTileMatrixSet(tileMatrixSetId);
+
+  // Desired output resolution from bbox + output pixels
+  const desiredResX = (bbox[2] - bbox[0]) / widthPx;
+  const desiredResY = (bbox[3] - bbox[1]) / heightPx;
+  const desiredMPerPx = Math.max(desiredResX, desiredResY);
+
+  const { startIndex } = chooseBestMatrix(matrices, desiredMPerPx, WMTS_MAX_TILES_PER_PAGE);
+
+  // Step down (less detailed) until tile count is acceptable
+  let matrixIndex = startIndex;
+  let range = tileRangeForBBox(bbox, matrices[matrixIndex]);
+  let tileCount = (range.maxCol - range.minCol + 1) * (range.maxRow - range.minRow + 1);
+
+  while (tileCount > WMTS_MAX_TILES_PER_PAGE && matrixIndex < matrices.length - 1) {
+    matrixIndex += 1; // less detail -> fewer tiles
+    range = tileRangeForBBox(bbox, matrices[matrixIndex]);
+    tileCount = (range.maxCol - range.minCol + 1) * (range.maxRow - range.minRow + 1);
+  }
+
+  const matrix = matrices[matrixIndex];
+
+  // Create a temporary canvas large enough for the full tile mosaic
+  const cols = range.maxCol - range.minCol + 1;
+  const rows = range.maxRow - range.minRow + 1;
+
+  const mosaicW = cols * matrix.tileWidth;
+  const mosaicH = rows * matrix.tileHeight;
+
+  const mosaic = document.createElement("canvas");
+  mosaic.width = mosaicW;
+  mosaic.height = mosaicH;
+  const mctx = mosaic.getContext("2d");
+
+  // Fetch tiles with simple concurrency limiting
+  const tasks = [];
+  for (let row = range.minRow; row <= range.maxRow; row += 1) {
+    for (let col = range.minCol; col <= range.maxCol; col += 1) {
+      const x = col - range.minCol;
+      const y = row - range.minRow;
+      const url = `${WMTS_BASE_URL}/${layerId}/default/${tileMatrixSetId}/${matrix.id}/${row}/${col}.png`;
+      tasks.push({ url, x, y });
+    }
+  }
+
+  const concurrency = 8;
+  let cursor = 0;
+  const workers = Array.from({ length: concurrency }, async () => {
+    while (cursor < tasks.length) {
+      const i = cursor;
+      cursor += 1;
+      const t = tasks[i];
+      const bmp = await fetchTileBitmap(t.url);
+      mctx.drawImage(
+        bmp,
+        t.x * matrix.tileWidth,
+        t.y * matrix.tileHeight,
+        matrix.tileWidth,
+        matrix.tileHeight
+      );
+    }
+  });
+
+  await Promise.all(workers);
+
+  // Crop the mosaic to exactly bbox and scale to requested output size.
+  const originX = matrix.topLeftCorner[0];
+  const originY = matrix.topLeftCorner[1];
+
+  const cropXMap = bbox[0] - (originX + range.minCol * range.tileSpanX);
+  const cropYMap = (originY - range.minRow * range.tileSpanY) - bbox[3];
+
+  const cropX = cropXMap / range.res;
+  const cropY = cropYMap / range.res;
+  const cropW = (bbox[2] - bbox[0]) / range.res;
+  const cropH = (bbox[3] - bbox[1]) / range.res;
+
+  const out = document.createElement("canvas");
+  out.width = widthPx;
+  out.height = heightPx;
+  const octx = out.getContext("2d");
+  octx.drawImage(mosaic, cropX, cropY, cropW, cropH, 0, 0, widthPx, heightPx);
+
+  return createImageBitmap(out);
 }
 
 function drawTrackOnCanvas(ctx, xs, ys, bbox, width, height) {
@@ -347,19 +664,95 @@ function drawTrackOnCanvas(ctx, xs, ys, bbox, width, height) {
   ctx.stroke();
 }
 
-function addPreview(canvas, index) {
+function formatScaleLabel(scale) {
+  return String(scale).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+}
+
+function drawPageLabel(ctx, scale, epsgCode) {
+  const utmZone = epsgCode - 25800;
+  const label = `1:${formatScaleLabel(scale)} | UTM ${utmZone}`;
+  const pad = 12;
+  ctx.font = "18px IBM Plex Mono, monospace";
+  const metrics = ctx.measureText(label);
+  const textW = metrics.width;
+  const textH = 21;
+  ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+  ctx.fillRect(pad, pad, textW + pad * 2, textH + pad);
+  ctx.fillStyle = "#111";
+  ctx.fillText(label, pad + 9, pad + textH);
+}
+
+function formatDeclination(deg) {
+  if (!Number.isFinite(deg)) return "ukendt";
+  const absVal = Math.abs(deg).toFixed(1);
+  const hemi = deg >= 0 ? "Ø" : "V";
+  return `${absVal}° ${hemi}`;
+}
+
+function formatConvergence(deg) {
+  if (!Number.isFinite(deg)) return "ukendt";
+  const absVal = Math.abs(deg).toFixed(1);
+  const hemi = deg >= 0 ? "Ø" : "V";
+  return `${absVal}° ${hemi}`;
+}
+
+function computeGridConvergenceDeg(lonDeg, latDeg) {
+  const zone = utmZoneFromLon(lonDeg);
+  const lon0 = zone * 6 - 183;
+  const deltaLon = (lonDeg - lon0) * (Math.PI / 180);
+  const lat = latDeg * (Math.PI / 180);
+  const gamma = Math.atan(Math.tan(deltaLon) * Math.sin(lat));
+  return (gamma * 180) / Math.PI;
+}
+
+
+function drawDeclinationLabel(ctx, declinationTrue, convergence, width, height) {
+  // Magnetic declination from geomagnetism is relative to TRUE north.
+  // If we want magnetic declination relative to GRID north (G-M angle), we must
+  // subtract grid convergence (GRID - TRUE): (MAG - GRID) = (MAG - TRUE) - (GRID - TRUE).
+  const declinationGrid =
+    Number.isFinite(declinationTrue) && Number.isFinite(convergence)
+      ? declinationTrue - convergence
+      : NaN;
+
+  const lines = [
+    `Mag. dekl. (gitter): ${formatDeclination(declinationGrid)}`,
+    `Mag. dekl. (sand nord): ${formatDeclination(declinationTrue)}`,
+  ];
+  const pad = 12;
+  ctx.font = "18px IBM Plex Mono, monospace";
+  const lineHeight = 21;
+  const textW = Math.max(...lines.map((line) => ctx.measureText(line).width));
+  const boxH = lineHeight * lines.length + pad;
+  const boxY = height - pad - boxH;
+  ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+  ctx.fillRect(pad, boxY, textW + pad * 2, boxH);
+  ctx.fillStyle = "#111";
+  lines.forEach((line, idx) => {
+    ctx.fillText(line, pad + 9, boxY + lineHeight * (idx + 1));
+  });
+}
+
+function createPreviewCard(index) {
   const previewCard = document.createElement("div");
-  previewCard.className = "preview-card";
+  previewCard.className = "preview-card loading";
 
   const img = document.createElement("img");
-  img.src = canvas.toDataURL("image/jpeg", 0.7);
+  img.alt = "";
+  img.src =
+    "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
 
   const label = document.createElement("p");
-  label.textContent = `Page ${index + 1}`;
+  label.textContent = `Side ${index + 1}`;
 
   previewCard.appendChild(img);
   previewCard.appendChild(label);
+  previewCard.addEventListener("click", () => {
+    if (!viewerUrls[index]) return;
+    openViewer(index);
+  });
   previewGrid.appendChild(previewCard);
+  return { card: previewCard, img, label };
 }
 
 function resizeCanvasForPreview(canvas, maxWidth = 480) {
@@ -376,6 +769,48 @@ function resizeCanvasForPreview(canvas, maxWidth = 480) {
   return previewCanvas;
 }
 
+function canvasToBlob(canvas, type, quality) {
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => resolve(blob), type, quality);
+  });
+}
+
+function createRenderProgressUpdater(total) {
+  let lastUpdate = 0;
+  let pending = null;
+
+  const update = (completed) => {
+    pending = completed;
+    const now = performance.now();
+    if (now - lastUpdate < 100) return;
+    lastUpdate = now;
+    setStatus(`Renderer side ${pending} / ${total}...`, true);
+    setRenderProgress(pending, total, true);
+    pending = null;
+  };
+
+  const flush = () => {
+    if (pending === null) return;
+    setStatus(`Renderer side ${pending} / ${total}...`, true);
+    setRenderProgress(pending, total, true);
+    pending = null;
+  };
+
+  return { update, flush };
+}
+
+async function runWithConcurrency(taskFns, limit) {
+  let cursor = 0;
+  const workers = Array.from({ length: limit }, async () => {
+    while (cursor < taskFns.length) {
+      const i = cursor;
+      cursor += 1;
+      await taskFns[i]();
+    }
+  });
+  await Promise.all(workers);
+}
+
 async function renderGPXToPdf(file, options) {
   const pointsLonLat =
     options.pointsLonLat ?? parseGPX(await file.text());
@@ -383,11 +818,16 @@ async function renderGPXToPdf(file, options) {
   const { transformer, epsg } = transformerForPoints(pointsLonLat);
   const { xs, ys } = projectPoints(pointsLonLat, transformer);
   const bbox = bboxFromPoints(xs, ys);
+  const modelDate = new Date();
+  const declinationModel = options.showDeclination
+    ? geomagnetism.model()
+    : null;
 
   const { wPx, hPx, wM, hM } = pageGroundSpan(
     options.scale,
     options.dpi,
-    options.paper
+    options.paper,
+    options.orientation
   );
 
   const { bboxes, rows, cols } = computePageGrid(
@@ -414,33 +854,42 @@ async function renderGPXToPdf(file, options) {
   const sortedBBoxes = indexed.map((entry) => entry[0]);
 
   setStatus(
-    `Pages: ${rows} rows x ${cols} cols | ${options.paper} | 1:${options.scale} | overlap ${(options.overlap * 100).toFixed(1)}%`
+    `Sider: ${rows} rækker x ${cols} kolonner | ${options.paper} | 1:${options.scale} | overlap ${(options.overlap * 100).toFixed(1)}%`
   );
+  setRenderProgress(0, sortedBBoxes.length, false);
 
   const pdfDoc = await PDFDocument.create();
-  const [paperWmm, paperHmm] = PAPER_SIZES_MM[options.paper];
+  const [paperWmm, paperHmm] = paperDimensionsMm(
+    options.paper,
+    options.orientation
+  );
   const pageWidthPt = (paperWmm / 25.4) * 72;
   const pageHeightPt = (paperHmm / 25.4) * 72;
 
-  for (let idx = 0; idx < sortedBBoxes.length; idx += 1) {
-    setStatus(`Rendering page ${idx + 1} / ${sortedBBoxes.length}...`, true);
-    const pageBBox = sortedBBoxes[idx];
+  const results = Array.from({ length: sortedBBoxes.length });
+  let completed = 0;
+  const progress = createRenderProgressUpdater(sortedBBoxes.length);
+  viewerUrls = Array.from({ length: sortedBBoxes.length });
+  const previewCards = sortedBBoxes.map((_, idx) => createPreviewCard(idx));
 
-    const baseImg = await fetchWmsImage(
-      {
-        baseUrl: WMS_BASE_URL,
-        layer: options.layer,
-        styles: "",
-        format: "image/png",
-        transparent: false,
-      },
-      pageBBox,
-      wPx,
-      hPx,
-      epsg
-    );
+  const tasks = sortedBBoxes.map((pageBBox, idx) => async () => {
+    const baseImgPromise = USE_WMTS_FOR_BASEMAP
+      ? fetchWmtsStitchedImage(pageBBox, wPx, hPx, epsg, options.layer)
+      : fetchWmsImage(
+          {
+            baseUrl: WMS_BASE_URL,
+            layer: options.layer,
+            styles: "",
+            format: "image/png",
+            transparent: false,
+          },
+          pageBBox,
+          wPx,
+          hPx,
+          epsg
+        );
 
-    const gridImg = await fetchWmsImage(
+    const gridImgPromise = fetchWmsImage(
       {
         baseUrl: WMS_GRID_URL,
         layer: GRID_LAYER,
@@ -454,6 +903,8 @@ async function renderGPXToPdf(file, options) {
       epsg
     );
 
+    const [baseImg, gridImg] = await Promise.all([baseImgPromise, gridImgPromise]);
+
     const canvas = document.createElement("canvas");
     canvas.width = wPx;
     canvas.height = hPx;
@@ -461,18 +912,52 @@ async function renderGPXToPdf(file, options) {
     ctx.drawImage(baseImg, 0, 0, wPx, hPx);
     ctx.drawImage(gridImg, 0, 0, wPx, hPx);
     drawTrackOnCanvas(ctx, xs, ys, pageBBox, wPx, hPx);
-
-    const previewCanvas = resizeCanvasForPreview(canvas);
-    addPreview(previewCanvas, idx);
-
-    const pngBlob = await new Promise((resolve) =>
-      canvas.toBlob((blob) => resolve(blob), "image/png")
-    );
-
-    if (!pngBlob) {
-      throw new Error("Failed to create page image.");
+    drawPageLabel(ctx, options.scale, epsg);
+    if (declinationModel) {
+      const centerX = (pageBBox[0] + pageBBox[2]) / 2;
+      const centerY = (pageBBox[1] + pageBBox[3]) / 2;
+      const [lon, lat] = transformer.inverse([centerX, centerY]);
+      let info;
+      try {
+        info = declinationModel.point([lat, lon, 0], modelDate);
+      } catch (error) {
+        info = declinationModel.point([lat, lon, 0]);
+      }
+      const convergence = computeGridConvergenceDeg(lon, lat);
+      drawDeclinationLabel(ctx, info.decl, convergence, wPx, hPx);
     }
 
+    const pngBlob = await canvasToBlob(canvas, "image/png");
+    if (!pngBlob) {
+      throw new Error("Kunne ikke oprette sidebillede.");
+    }
+
+    const previewCanvas = resizeCanvasForPreview(canvas);
+    const previewBlob = await canvasToBlob(previewCanvas, "image/jpeg", 0.7);
+
+    results[idx] = { pngBlob, previewBlob };
+    const viewerUrl = URL.createObjectURL(pngBlob);
+    viewerUrls[idx] = viewerUrl;
+
+    if (previewBlob) {
+      const previewUrl = URL.createObjectURL(previewBlob);
+      previewUrls.push(previewUrl);
+      previewCards[idx].img.src = previewUrl;
+      previewCards[idx].img.alt = `Forhåndsvisning side ${idx + 1}`;
+    }
+    previewCards[idx].card.classList.remove("loading");
+    completed += 1;
+    progress.update(completed);
+  });
+
+  setStatus(`Renderer side 0 / ${sortedBBoxes.length}...`, true);
+  setRenderProgress(0, sortedBBoxes.length, true);
+  await runWithConcurrency(tasks, PAGE_RENDER_CONCURRENCY);
+  progress.flush();
+  setStatus("Samler PDF...", true);
+
+  for (let idx = 0; idx < results.length; idx += 1) {
+    const { pngBlob } = results[idx];
     const pngBytes = await pngBlob.arrayBuffer();
     const embedded = await pdfDoc.embedPng(pngBytes);
     const page = pdfDoc.addPage([pageWidthPt, pageHeightPt]);
@@ -497,8 +982,8 @@ const fileInput = document.getElementById("gpxFile");
 function updateFileMeta(file, pointsLonLat) {
   const lengthMeters = computeTrackLengthMeters(pointsLonLat);
   fileMetaEl.innerHTML = `
-    <div><strong>File:</strong> ${file.name}</div>
-    <div><strong>Track length:</strong> ${formatDistance(lengthMeters)}</div>
+    <div><strong>Fil:</strong> ${file.name}</div>
+    <div><strong>Sporlængde:</strong> ${formatDistance(lengthMeters)}</div>
   `;
   fileMetaEl.classList.remove("hidden");
 }
@@ -508,23 +993,26 @@ async function handleFileSelection(file) {
   selectedFile = file;
   cachedPoints = null;
   hasGenerated = false;
-  renderBtn.textContent = "Generate map PDF";
-  setStatus("Reading GPX...");
+  renderBtn.textContent = "Generér kort-PDF";
+  previewSection.classList.add("hidden");
+  setStatus("Læser GPX...");
   try {
     const text = await file.text();
     const points = parseGPX(text);
     cachedPoints = points;
     updateFileMeta(file, points);
     setProgress(2, [1]);
-    setStatus("GPX loaded. Choose layout.");
+    setStatus("GPX indlæst. Vælg layout.");
     renderBtn.disabled = false;
+    renderBtn.classList.add("ready");
     const nextFocus = document.querySelector("[data-paper=\"A4\"]");
     if (nextFocus) nextFocus.focus();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    setStatus(`Error: ${message}`);
+    setStatus(`Fejl: ${message}`);
     fileMetaEl.classList.add("hidden");
     renderBtn.disabled = true;
+    renderBtn.classList.remove("ready");
   }
 }
 
@@ -558,12 +1046,103 @@ dropzoneEl.addEventListener("drop", (event) => {
   }
 });
 
+function openViewer(index) {
+  const url = viewerUrls[index];
+  if (!url) return;
+  viewerIndex = index;
+  viewerImageEl.onload = () => {
+    fitViewerImage();
+  };
+  viewerImageEl.src = url;
+  viewerEl.classList.remove("hidden");
+}
+
+function closeViewer() {
+  viewerEl.classList.add("hidden");
+  viewerImageEl.src = "";
+}
+
+function showViewerPage(nextIndex) {
+  if (!viewerUrls.length) return;
+  const total = viewerUrls.length;
+  const next = (nextIndex + total) % total;
+  const url = viewerUrls[next];
+  if (!url) return;
+  viewerIndex = next;
+  viewerImageEl.onload = () => {
+    fitViewerImage();
+  };
+  viewerImageEl.src = url;
+}
+
+function applyViewerZoom() {
+  const width = viewerBaseSize.width * viewerZoom;
+  const height = viewerBaseSize.height * viewerZoom;
+  viewerImageEl.style.width = `${width}px`;
+  viewerImageEl.style.height = `${height}px`;
+  viewerCaptionEl.textContent = `Side ${viewerIndex + 1} af ${viewerUrls.length} · ${Math.round(viewerZoom * 100)}%`;
+}
+
+function fitViewerImage() {
+  const maxW = Math.min(window.innerWidth * 0.9, 980);
+  const maxH = window.innerHeight * 0.8;
+  const ratio = Math.min(
+    maxW / viewerImageEl.naturalWidth,
+    maxH / viewerImageEl.naturalHeight,
+    1
+  );
+  viewerBaseSize = {
+    width: viewerImageEl.naturalWidth * ratio,
+    height: viewerImageEl.naturalHeight * ratio,
+  };
+  viewerZoom = 1;
+  applyViewerZoom();
+}
+
+function setViewerZoom(nextZoom) {
+  viewerZoom = Math.min(Math.max(nextZoom, 0.5), 3);
+  applyViewerZoom();
+}
+
+viewerCloseEl.addEventListener("click", closeViewer);
+viewerPrevEl.addEventListener("click", () => showViewerPage(viewerIndex - 1));
+viewerNextEl.addEventListener("click", () => showViewerPage(viewerIndex + 1));
+viewerZoomOutEl.addEventListener("click", () => setViewerZoom(viewerZoom - 0.2));
+viewerZoomInEl.addEventListener("click", () => setViewerZoom(viewerZoom + 0.2));
+viewerZoomResetEl.addEventListener("click", () => fitViewerImage());
+
+viewerStageEl.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  const delta = event.deltaY > 0 ? -0.1 : 0.1;
+  setViewerZoom(viewerZoom + delta);
+});
+
+window.addEventListener("resize", () => {
+  if (viewerEl.classList.contains("hidden")) return;
+  fitViewerImage();
+});
+
+viewerEl.addEventListener("click", (event) => {
+  if (event.target === viewerEl) {
+    closeViewer();
+  }
+});
+
+window.addEventListener("keydown", (event) => {
+  if (viewerEl.classList.contains("hidden")) return;
+  if (event.key === "Escape") closeViewer();
+  if (event.key === "ArrowLeft") showViewerPage(viewerIndex - 1);
+  if (event.key === "ArrowRight") showViewerPage(viewerIndex + 1);
+  if (event.key === "+" || event.key === "=") setViewerZoom(viewerZoom + 0.2);
+  if (event.key === "-") setViewerZoom(viewerZoom - 0.2);
+});
+
 controlsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   clearPreview();
 
   if (!selectedFile) {
-    setStatus("Please select a GPX file.");
+    setStatus("Vælg en GPX-fil.");
     return;
   }
 
@@ -576,36 +1155,41 @@ controlsForm.addEventListener("submit", async (event) => {
   const overlapValue = Number.isFinite(overlapInput)
     ? overlapInput / 100
     : DEFAULT_OVERLAP;
+  const showDeclination = document.getElementById("declinationToggle").checked;
   renderBtn.disabled = true;
-  const previewSection = document.getElementById("preview");
-  if (previewSection) {
-    previewSection.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
+  renderBtn.classList.remove("ready");
+  previewSection.classList.remove("hidden");
+  previewSection.scrollIntoView({ behavior: "smooth", block: "start" });
   setProgress(3, [1, 2]);
-  setStatus("Preparing PDF...", true);
+  setStatus("Forbereder PDF...", true);
 
   try {
     const pdfBlob = await renderGPXToPdf(selectedFile, {
       scale: selections.scale,
       dpi: DEFAULT_DPI,
       paper: selections.paper,
+      orientation: selections.orientation,
       overlap: overlapValue,
       layer: DEFAULT_LAYER,
+      showDeclination,
       pointsLonLat: cachedPoints,
     });
 
     setDownload(pdfBlob);
     setProgress(3, [1, 2, 3]);
-    setStatus("PDF ready.");
+    setStatus("PDF klar.");
+    setRenderProgress(0, 1, false);
     hasGenerated = true;
-    renderBtn.textContent = "Re-generate map PDF";
+    renderBtn.textContent = "Generér kort-PDF igen";
+    renderBtn.classList.add("ready");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const friendly = message.includes("Failed to fetch")
-      ? "Map tiles could not be fetched (possible CORS issue). Try again or use another network."
+      ? "Kortfliser kunne ikke hentes (mulig CORS-fejl). Prøv igen eller brug et andet netværk."
       : message;
-    setStatus(`Error: ${friendly}`);
+    setStatus(`Fejl: ${friendly}`);
     setProgress(2, [1]);
+    setRenderProgress(0, 1, false);
   } finally {
     renderBtn.disabled = false;
     spinnerEl.classList.add("hidden");
