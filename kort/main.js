@@ -239,6 +239,138 @@ function bboxFromPoints(xs, ys) {
   return [minx, miny, maxx, maxy];
 }
 
+function clampOverlap(overlap) {
+  return Math.max(0.0, Math.min(overlap, 0.9));
+}
+
+function cumulativeDistances(xs, ys) {
+  const distances = Array.from({ length: xs.length }, () => 0);
+  for (let i = 1; i < xs.length; i += 1) {
+    const dx = xs[i] - xs[i - 1];
+    const dy = ys[i] - ys[i - 1];
+    distances[i] = distances[i - 1] + Math.hypot(dx, dy);
+  }
+  return distances;
+}
+
+function windowEndIndex(distances, startIndex, windowMeters, minPoints) {
+  const target = distances[startIndex] + windowMeters;
+  let endIndex = startIndex;
+  while (endIndex < distances.length - 1 && distances[endIndex] < target) {
+    endIndex += 1;
+  }
+  if (endIndex === startIndex) {
+    endIndex = Math.min(startIndex + minPoints, distances.length - 1);
+  }
+  return endIndex;
+}
+
+function meanPoints(xs, ys, startIndex, endIndex) {
+  const count = endIndex - startIndex + 1;
+  let sumX = 0;
+  let sumY = 0;
+  for (let i = startIndex; i <= endIndex; i += 1) {
+    sumX += xs[i];
+    sumY += ys[i];
+  }
+  return { x: sumX / count, y: sumY / count };
+}
+
+function bboxFromCenter(cx, cy, wM, hM) {
+  return [cx - wM / 2, cy - hM / 2, cx + wM / 2, cy + hM / 2];
+}
+
+function pointInBBox(x, y, bbox) {
+  return x >= bbox[0] && x <= bbox[2] && y >= bbox[1] && y <= bbox[3];
+}
+
+function shrinkBBox(bbox, marginX, marginY) {
+  return [
+    bbox[0] + marginX,
+    bbox[1] + marginY,
+    bbox[2] - marginX,
+    bbox[3] - marginY,
+  ];
+}
+
+function lastIndexInside(bbox, xs, ys, startIndex) {
+  let last = startIndex;
+  for (let i = startIndex; i < xs.length; i += 1) {
+    if (!pointInBBox(xs[i], ys[i], bbox)) break;
+    last = i;
+  }
+  return last;
+}
+
+function computeAdaptivePages(xs, ys, options) {
+  const overlap = clampOverlap(options.overlap);
+  const distances = cumulativeDistances(xs, ys);
+  const maxIndex = xs.length - 1;
+  const metricsByOrientation = {
+    portrait: pageGroundSpan(options.scale, options.dpi, options.paper, "portrait"),
+    landscape: pageGroundSpan(options.scale, options.dpi, options.paper, "landscape"),
+  };
+  const windowFactor = 0.6;
+  const minWindowPoints = 8;
+
+  const pages = [];
+  let startIndex = 0;
+  while (startIndex <= maxIndex) {
+    const candidates = ["portrait", "landscape"].map((orientation) => {
+      const metrics = metricsByOrientation[orientation];
+      const windowMeters = Math.max(metrics.wM, metrics.hM) * windowFactor;
+      const centerEnd = windowEndIndex(
+        distances,
+        startIndex,
+        windowMeters,
+        minWindowPoints
+      );
+      const center = meanPoints(xs, ys, startIndex, centerEnd);
+      let bbox = bboxFromCenter(center.x, center.y, metrics.wM, metrics.hM);
+      if (!pointInBBox(xs[startIndex], ys[startIndex], bbox)) {
+        bbox = bboxFromCenter(xs[startIndex], ys[startIndex], metrics.wM, metrics.hM);
+      }
+      const marginX = (metrics.wM * overlap) / 2;
+      const marginY = (metrics.hM * overlap) / 2;
+      const inner = shrinkBBox(bbox, marginX, marginY);
+      const endIndex = lastIndexInside(inner, xs, ys, startIndex);
+      const coveredDist = distances[endIndex] - distances[startIndex];
+      return {
+        orientation,
+        bbox,
+        wPx: metrics.wPx,
+        hPx: metrics.hPx,
+        wM: metrics.wM,
+        hM: metrics.hM,
+        endIndex,
+        coveredDist,
+      };
+    });
+
+    let best = candidates[0];
+    if (
+      candidates[1].endIndex > best.endIndex ||
+      (candidates[1].endIndex === best.endIndex &&
+        candidates[1].coveredDist > best.coveredDist)
+    ) {
+      best = candidates[1];
+    }
+
+    pages.push({
+      bbox: best.bbox,
+      orientation: best.orientation,
+      wPx: best.wPx,
+      hPx: best.hPx,
+    });
+
+    if (best.endIndex >= maxIndex) break;
+    const nextIndex = best.endIndex > startIndex ? best.endIndex : startIndex + 1;
+    startIndex = Math.min(nextIndex, maxIndex);
+  }
+
+  return pages;
+}
+
 function groundResolutionMPerPx(scale, dpi) {
   return (scale * 0.0254) / dpi;
 }
@@ -823,56 +955,63 @@ async function renderGPXToPdf(file, options) {
     ? geomagnetism.model()
     : null;
 
-  const { wPx, hPx, wM, hM } = pageGroundSpan(
-    options.scale,
-    options.dpi,
-    options.paper,
-    options.orientation
-  );
+  const overlap = clampOverlap(options.overlap);
+  let pages = [];
+  let statusLine = "";
 
-  const { bboxes, rows, cols } = computePageGrid(
-    bbox,
-    wM,
-    hM,
-    options.overlap
-  );
+  if (options.orientation === "auto") {
+    pages = computeAdaptivePages(xs, ys, { ...options, overlap });
+    statusLine = `Sider: ${pages.length} | ${options.paper} | 1:${options.scale} | overlap ${(overlap * 100).toFixed(1)}% | auto`;
+  } else {
+    const { wPx, hPx, wM, hM } = pageGroundSpan(
+      options.scale,
+      options.dpi,
+      options.paper,
+      options.orientation
+    );
 
-  const originalBBoxes = bboxes.slice();
-  const desiredBBoxes = bboxes.map((bb) => recenterPageBBox(bb, xs, ys, wM, hM));
-  const alignedBBoxes = alignBBoxesToGrid(
-    originalBBoxes,
-    desiredBBoxes,
-    rows,
-    cols,
-    wM,
-    hM
-  );
+    const { bboxes, rows, cols } = computePageGrid(bbox, wM, hM, overlap);
 
-  const indexed = alignedBBoxes.map((bb) => [bb, pageTrackIndex(bb, xs, ys)]);
-  indexed.sort((a, b) => a[1] - b[1]);
+    const originalBBoxes = bboxes.slice();
+    const desiredBBoxes = bboxes.map((bb) => recenterPageBBox(bb, xs, ys, wM, hM));
+    const alignedBBoxes = alignBBoxesToGrid(
+      originalBBoxes,
+      desiredBBoxes,
+      rows,
+      cols,
+      wM,
+      hM
+    );
 
-  const sortedBBoxes = indexed.map((entry) => entry[0]);
+    const indexed = alignedBBoxes.map((bb) => [bb, pageTrackIndex(bb, xs, ys)]);
+    const filteredIndexed = indexed.some((entry) => Number.isFinite(entry[1]))
+      ? indexed.filter((entry) => Number.isFinite(entry[1]))
+      : indexed;
+    filteredIndexed.sort((a, b) => a[1] - b[1]);
 
-  setStatus(
-    `Sider: ${rows} rækker x ${cols} kolonner | ${options.paper} | 1:${options.scale} | overlap ${(options.overlap * 100).toFixed(1)}%`
-  );
-  setRenderProgress(0, sortedBBoxes.length, false);
+    const sortedBBoxes = filteredIndexed.map((entry) => entry[0]);
+    pages = sortedBBoxes.map((bboxEntry) => ({
+      bbox: bboxEntry,
+      orientation: options.orientation,
+      wPx,
+      hPx,
+    }));
+
+    statusLine = `Sider: ${rows} rækker x ${cols} kolonner | ${options.paper} | 1:${options.scale} | overlap ${(overlap * 100).toFixed(1)}%`;
+  }
+
+  setStatus(statusLine);
+  setRenderProgress(0, pages.length, false);
 
   const pdfDoc = await PDFDocument.create();
-  const [paperWmm, paperHmm] = paperDimensionsMm(
-    options.paper,
-    options.orientation
-  );
-  const pageWidthPt = (paperWmm / 25.4) * 72;
-  const pageHeightPt = (paperHmm / 25.4) * 72;
-
-  const results = Array.from({ length: sortedBBoxes.length });
+  const results = Array.from({ length: pages.length });
   let completed = 0;
-  const progress = createRenderProgressUpdater(sortedBBoxes.length);
-  viewerUrls = Array.from({ length: sortedBBoxes.length });
-  const previewCards = sortedBBoxes.map((_, idx) => createPreviewCard(idx));
+  const progress = createRenderProgressUpdater(pages.length);
+  viewerUrls = Array.from({ length: pages.length });
+  const previewCards = pages.map((_, idx) => createPreviewCard(idx));
 
-  const tasks = sortedBBoxes.map((pageBBox, idx) => async () => {
+  const tasks = pages.map((pageInfo, idx) => async () => {
+    const { bbox: pageBBox, wPx, hPx } = pageInfo;
     const baseImgPromise = USE_WMTS_FOR_BASEMAP
       ? fetchWmtsStitchedImage(pageBBox, wPx, hPx, epsg, options.layer)
       : fetchWmsImage(
@@ -950,8 +1089,8 @@ async function renderGPXToPdf(file, options) {
     progress.update(completed);
   });
 
-  setStatus(`Renderer side 0 / ${sortedBBoxes.length}...`, true);
-  setRenderProgress(0, sortedBBoxes.length, true);
+  setStatus(`Renderer side 0 / ${pages.length}...`, true);
+  setRenderProgress(0, pages.length, true);
   await runWithConcurrency(tasks, PAGE_RENDER_CONCURRENCY);
   progress.flush();
   setStatus("Samler PDF...", true);
@@ -959,6 +1098,10 @@ async function renderGPXToPdf(file, options) {
   for (let idx = 0; idx < results.length; idx += 1) {
     const { pngBlob } = results[idx];
     const pngBytes = await pngBlob.arrayBuffer();
+    const { orientation } = pages[idx];
+    const [paperWmm, paperHmm] = paperDimensionsMm(options.paper, orientation);
+    const pageWidthPt = (paperWmm / 25.4) * 72;
+    const pageHeightPt = (paperHmm / 25.4) * 72;
     const embedded = await pdfDoc.embedPng(pngBytes);
     const page = pdfDoc.addPage([pageWidthPt, pageHeightPt]);
 
