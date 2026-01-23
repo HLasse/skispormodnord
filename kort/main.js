@@ -2,6 +2,8 @@ import proj4 from "https://cdn.jsdelivr.net/npm/proj4@2.9.0/+esm";
 import geomagnetism from "https://cdn.jsdelivr.net/npm/geomagnetism@0.2.0/+esm";
 import { PDFDocument } from "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/+esm";
 
+const L = window.L;
+
 const WMS_BASE_URL = "https://wms.geonorge.no/skwms1/wms.topo";
 const WMS_GRID_URL = "https://wms.geonorge.no/skwms1/wms.rutenett";
 
@@ -10,11 +12,14 @@ const WMS_GRID_URL = "https://wms.geonorge.no/skwms1/wms.rutenett";
 const WMTS_CAPABILITIES_URL =
   "https://cache.kartverket.no/v1/wmts/1.0.0/WMTSCapabilities.xml";
 const WMTS_BASE_URL = "https://cache.kartverket.no/v1/wmts/1.0.0";
+const MAP_TILE_MATRIX_SET = "webmercator";
 
 // "toporaster" is Kartverket's topo raster/turkart layer.
 // Other layers: topo, topograatone, sjokartraster.
 const DEFAULT_LAYER = "toporaster";
 const GRID_LAYER = "1km_rutelinje";
+const MAP_TILE_URL = `${WMTS_BASE_URL}/${DEFAULT_LAYER}/default/${MAP_TILE_MATRIX_SET}/{z}/{y}/{x}.png`;
+const MAP_ATTRIBUTION = "&copy; Kartverket";
 
 // For PDF export, WMTS requires stitching many tiles. If a page would require
 // too many tiles at the highest zoom, we automatically step down.
@@ -25,6 +30,19 @@ const DEFAULT_DPI = 300;
 const DEFAULT_OVERLAP = 0.05;
 const TRACK_STROKE_PX = 4;
 const PAGE_RENDER_CONCURRENCY = 2;
+const PAGE_STYLE = {
+  color: "#1e1b16",
+  weight: 2,
+  fill: true,
+  fillOpacity: 0.3,
+};
+const PAGE_STYLE_SELECTED = {
+  color: "#d36b2d",
+  weight: 3,
+  fill: true,
+  fillOpacity: 0.38,
+};
+const PAGE_FILL_COLOR = "#f1b27c";
 const PAPER_SIZES_MM = {
   A5: [148.0, 210.0],
   A4: [210.0, 297.0],
@@ -37,37 +55,45 @@ const spinnerEl = document.getElementById("spinner");
 const progressEl = document.getElementById("progress");
 const fileMetaEl = document.getElementById("fileMeta");
 const dropzoneEl = document.getElementById("dropzone");
-const previewGrid = document.getElementById("previewGrid");
 const downloadLink = document.getElementById("downloadLink");
 const renderBtn = document.getElementById("renderBtn");
-const previewSection = document.getElementById("preview");
 const renderProgressEl = document.getElementById("renderProgress");
-const viewerEl = document.getElementById("viewer");
-const viewerImageEl = document.getElementById("viewerImage");
-const viewerCaptionEl = document.getElementById("viewerCaption");
-const viewerCloseEl = document.getElementById("viewerClose");
-const viewerPrevEl = document.getElementById("viewerPrev");
-const viewerNextEl = document.getElementById("viewerNext");
-const viewerStageEl = document.getElementById("viewerStage");
-const viewerZoomOutEl = document.getElementById("viewerZoomOut");
-const viewerZoomResetEl = document.getElementById("viewerZoomReset");
-const viewerZoomInEl = document.getElementById("viewerZoomIn");
+const layoutBtn = document.getElementById("layoutBtn");
+const mapEl = document.getElementById("map");
+const selectionBarEl = document.getElementById("selectionBar");
+const selectionSelectEl = document.getElementById("selectionSelect");
+const orientationToggleEl = document.getElementById("orientationToggle");
+const removePageBtn = document.getElementById("removePageBtn");
+const addPageBtn = document.getElementById("addPageBtn");
+const colorPickerEl = document.getElementById("colorPicker");
+const sidebarEl = document.getElementById("sidebar");
+const sidebarToggleEl = document.getElementById("sidebarToggle");
 
 const selections = {
   paper: "A4",
   scale: 50000,
   orientation: "portrait",
+  trackColor: "#ff3b30",
 };
 
 let selectedFile = null;
 let cachedPoints = null;
-let hasGenerated = false;
-let viewerUrls = [];
-let previewUrls = [];
+let transformerState = null;
+let mapInstance = null;
+let trackLayer = null;
+let pageLayerGroup = null;
+let pageLayers = [];
+let pageLabelLayers = [];
+let pageColors = [];
+let selectionMarker = null;
+let layoutPages = [];
+let selectedPageIndex = null;
+let isLayoutDirty = false;
+let isLayoutReady = false;
 let downloadUrl = null;
-let viewerIndex = 0;
-let viewerZoom = 1;
-let viewerBaseSize = { width: 0, height: 0 };
+let dragState = null;
+let dragListenersActive = false;
+let nextPageId = 1;
 
 function setStatus(message, isLoading = false) {
   statusTextEl.textContent = message;
@@ -95,21 +121,25 @@ function setDownload(blob) {
   downloadLink.classList.remove("disabled");
 }
 
-function clearPreview() {
-  previewGrid.innerHTML = "";
+function clearDownload() {
   downloadLink.classList.add("disabled");
   downloadLink.removeAttribute("href");
-  viewerUrls.forEach((url) => URL.revokeObjectURL(url));
-  viewerUrls = [];
-  previewUrls.forEach((url) => URL.revokeObjectURL(url));
-  previewUrls = [];
   if (downloadUrl) {
     URL.revokeObjectURL(downloadUrl);
     downloadUrl = null;
   }
-  viewerIndex = 0;
-  viewerZoom = 1;
   setRenderProgress(0, 1, false);
+}
+
+function resetLayoutState() {
+  clearPageOverlays();
+  layoutPages = [];
+  isLayoutReady = false;
+  isLayoutDirty = false;
+  selectedPageIndex = null;
+  pageColors = [];
+  updateSelectionBar();
+  updateLayoutButtons();
 }
 
 function setProgress(activeStep, doneSteps) {
@@ -137,6 +167,7 @@ function setupSegmentedControls() {
     if (!button) return;
     selections.paper = button.dataset.paper;
     setSegmentedActive(paperGroup, selections.paper, "paper");
+    markLayoutDirty("Papirstørrelsen er ændret. Klik Genlav layout.");
   });
 
   scaleGroup.addEventListener("click", (event) => {
@@ -144,6 +175,7 @@ function setupSegmentedControls() {
     if (!button) return;
     selections.scale = Number(button.dataset.scale);
     setSegmentedActive(scaleGroup, String(selections.scale), "scale");
+    markLayoutDirty("Målestokken er ændret. Klik Genlav layout.");
   });
 
   orientationGroup.addEventListener("click", (event) => {
@@ -155,7 +187,69 @@ function setupSegmentedControls() {
       String(selections.orientation),
       "orientation"
     );
+    markLayoutDirty("Orienteringen er ændret. Klik Genlav layout.");
   });
+}
+
+function setupColorPicker() {
+  if (!colorPickerEl) return;
+  colorPickerEl.querySelectorAll(".color-swatch").forEach((btn) => {
+    const swatch = btn;
+    const color = swatch.dataset.color;
+    if (color) {
+      swatch.style.background = color;
+    }
+    if (color === selections.trackColor) {
+      swatch.classList.add("active");
+    }
+    swatch.addEventListener("click", () => {
+      if (!color) return;
+      selections.trackColor = color;
+      colorPickerEl.querySelectorAll(".color-swatch").forEach((el) => {
+        el.classList.toggle("active", el === swatch);
+      });
+      if (trackLayer) {
+        trackLayer.setStyle({ color: selections.trackColor });
+      }
+    });
+  });
+}
+
+function setupSidebarToggle() {
+  if (!sidebarToggleEl || !sidebarEl) return;
+  sidebarEl.classList.add("open");
+  sidebarToggleEl.addEventListener("click", () => {
+    sidebarEl.classList.toggle("open");
+    if (mapInstance) {
+      setTimeout(() => {
+        mapInstance.invalidateSize();
+      }, 320);
+    }
+  });
+}
+
+function updateLayoutButtons() {
+  if (!layoutBtn) return;
+  layoutBtn.disabled = !cachedPoints;
+  layoutBtn.textContent = isLayoutReady ? "Genlav layout" : "Lav layout";
+  if (isLayoutReady && !isLayoutDirty) {
+    renderBtn.disabled = false;
+    renderBtn.classList.add("ready");
+  } else {
+    renderBtn.disabled = true;
+    renderBtn.classList.remove("ready");
+  }
+}
+
+function markLayoutDirty(message) {
+  if (!isLayoutReady) return;
+  isLayoutDirty = true;
+  clearDownload();
+  updateLayoutButtons();
+  setProgress(2, [1]);
+  if (message) {
+    setStatus(message);
+  }
 }
 
 function parseGPX(xmlText) {
@@ -221,6 +315,474 @@ function projectPoints(pointsLonLat, transformer) {
     ys.push(y);
   }
   return { xs, ys };
+}
+
+function hexToRgb(hex) {
+  const value = hex.replace("#", "");
+  if (value.length !== 6) return null;
+  const r = parseInt(value.slice(0, 2), 16);
+  const g = parseInt(value.slice(2, 4), 16);
+  const b = parseInt(value.slice(4, 6), 16);
+  if ([r, g, b].some((v) => Number.isNaN(v))) return null;
+  return { r, g, b };
+}
+
+function rgbToHex({ r, g, b }) {
+  const toHex = (v) => v.toString(16).padStart(2, "0");
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function interpolateColor(startHex, endHex, t) {
+  const start = hexToRgb(startHex);
+  const end = hexToRgb(endHex);
+  if (!start || !end) return startHex;
+  const lerp = (a, b) => Math.round(a + (b - a) * t);
+  return rgbToHex({
+    r: lerp(start.r, end.r),
+    g: lerp(start.g, end.g),
+    b: lerp(start.b, end.b),
+  });
+}
+
+function computePageColors(count) {
+  return Array.from({ length: count }, () => PAGE_FILL_COLOR);
+}
+
+function initMap() {
+  if (mapInstance || !mapEl) return;
+  if (!L) {
+    setStatus("Kortbiblioteket kunne ikke indlæses.");
+    return;
+  }
+  mapInstance = L.map(mapEl, {
+    zoomControl: true,
+    zoomSnap: 0.5,
+    renderer: L.svg(),
+  });
+  if (selectionBarEl) {
+    L.DomEvent.disableClickPropagation(selectionBarEl);
+    L.DomEvent.disableScrollPropagation(selectionBarEl);
+  }
+  L.tileLayer(MAP_TILE_URL, {
+    maxZoom: 18,
+    attribution: MAP_ATTRIBUTION,
+  }).addTo(mapInstance);
+  mapInstance.setView([64.5, 11.0], 5);
+
+  pageLayerGroup = L.layerGroup().addTo(mapInstance);
+
+  mapInstance.on("click", (event) => {
+    const target = event.originalEvent?.target;
+    if (target && target.closest && target.closest(".page-rect")) {
+      return;
+    }
+    selectPage(null);
+  });
+  mapInstance.on("zoomend move", () => {
+    updateSelectionBar();
+  });
+}
+
+function updateTrackLayer(pointsLonLat) {
+  initMap();
+  if (!mapInstance || !L) return;
+  if (trackLayer) {
+    mapInstance.removeLayer(trackLayer);
+  }
+  const latLngs = pointsLonLat.map(([lon, lat]) => [lat, lon]);
+  trackLayer = L.polyline(latLngs, {
+    color: selections.trackColor,
+    weight: 4,
+    opacity: 0.9,
+  }).addTo(mapInstance);
+  const bounds = L.latLngBounds(latLngs);
+  mapInstance.fitBounds(bounds.pad(0.1));
+}
+
+function clearTrackLayer() {
+  if (mapInstance && trackLayer) {
+    mapInstance.removeLayer(trackLayer);
+    trackLayer = null;
+  }
+}
+
+function bboxToLatLngBounds(bbox, transformer) {
+  if (!L) return null;
+  const [minx, miny, maxx, maxy] = bbox;
+  const [minLon, minLat] = transformer.inverse([minx, miny]);
+  const [maxLon, maxLat] = transformer.inverse([maxx, maxy]);
+  return L.latLngBounds([minLat, minLon], [maxLat, maxLon]);
+}
+
+function clearPageOverlays() {
+  if (!pageLayerGroup) return;
+  pageLayers.forEach((layer) => pageLayerGroup.removeLayer(layer));
+  pageLayers = [];
+  pageLabelLayers.forEach((layer) => pageLayerGroup.removeLayer(layer));
+  pageLabelLayers = [];
+}
+
+function ensurePageIds(pages) {
+  pages.forEach((page) => {
+    if (!page.id) {
+      page.id = nextPageId;
+      nextPageId += 1;
+    }
+  });
+}
+
+function createPageLabel(page, index) {
+  const el = document.createElement("div");
+  el.className = "page-label";
+  el.textContent = String(index + 1);
+
+  const bounds = bboxToLatLngBounds(page.bbox, transformerState.transformer);
+  if (!bounds) return null;
+  const position = bounds.getNorthWest();
+
+  const marker = L.marker(position, {
+    interactive: true,
+    icon: L.divIcon({
+      className: "",
+      html: el,
+      iconSize: null,
+    }),
+  });
+  return marker;
+}
+
+function renderPageOverlays() {
+  if (!mapInstance || !transformerState || !layoutPages.length || !L) return;
+  clearPageOverlays();
+  ensurePageIds(layoutPages);
+  pageColors = computePageColors(layoutPages.length);
+
+  layoutPages.forEach((page, index) => {
+    const bounds = bboxToLatLngBounds(page.bbox, transformerState.transformer);
+    if (!bounds) return;
+    const fillColor = pageColors[index] ?? PAGE_FILL_COLOR;
+    const rect = L.rectangle(bounds, {
+      ...PAGE_STYLE,
+      fillColor,
+      interactive: true,
+      className: "page-rect",
+    });
+    rect.on("mousedown", (event) => {
+      L.DomEvent.stop(event);
+      startDrag(event, index);
+      selectPage(index, getContainerPointFromEvent(event));
+    });
+    rect.on("touchstart", (event) => {
+      L.DomEvent.stop(event);
+      startDrag(event, index);
+      selectPage(index, getContainerPointFromEvent(event));
+    });
+    rect.on("click", (event) => {
+      L.DomEvent.stop(event);
+      selectPage(index, getContainerPointFromEvent(event));
+    });
+    rect.addTo(pageLayerGroup);
+    pageLayers.push(rect);
+
+    const labelMarker = createPageLabel(page, index);
+    if (labelMarker) {
+      labelMarker.addTo(pageLayerGroup);
+      pageLabelLayers.push(labelMarker);
+    }
+  });
+
+  updatePageStyles();
+  fitMapToLayout();
+}
+
+function fitMapToLayout() {
+  if (!mapInstance || !layoutPages.length || !transformerState || !L) return;
+  const combined = L.latLngBounds();
+  layoutPages.forEach((page) => {
+    const bounds = bboxToLatLngBounds(page.bbox, transformerState.transformer);
+    combined.extend(bounds);
+  });
+  if (combined.isValid()) {
+    mapInstance.fitBounds(combined.pad(0.08));
+  }
+}
+
+function updatePageStyles() {
+  pageLayers.forEach((layer, index) => {
+    const baseStyle =
+      index === selectedPageIndex ? PAGE_STYLE_SELECTED : PAGE_STYLE;
+    const fillColor = pageColors[index] ?? PAGE_FILL_COLOR;
+    layer.setStyle({ ...baseStyle, fillColor });
+    if (index === selectedPageIndex) {
+      layer.bringToFront();
+    }
+  });
+  pageLabelLayers.forEach((layer, index) => {
+    if (index === selectedPageIndex) {
+      layer.bringToFront();
+    }
+  });
+}
+
+function selectPage(index, anchorPoint) {
+  if (index === null || index === undefined) {
+    selectedPageIndex = null;
+  } else {
+    selectedPageIndex = index;
+  }
+  updatePageStyles();
+  requestAnimationFrame(() => {
+    updateSelectionBar(anchorPoint);
+  });
+}
+
+function updateSelectionBar(anchorPoint) {
+  if (!selectionBarEl || !mapInstance || !selectionSelectEl || !orientationToggleEl) return;
+  if (!transformerState) {
+    if (selectionMarker) {
+      mapInstance.removeLayer(selectionMarker);
+      selectionMarker = null;
+    }
+    selectionBarEl.classList.add("hidden");
+    return;
+  }
+  if (selectedPageIndex === null || !layoutPages[selectedPageIndex]) {
+    if (selectionMarker) {
+      mapInstance.removeLayer(selectionMarker);
+      selectionMarker = null;
+    }
+    selectionBarEl.classList.add("hidden");
+    return;
+  }
+  const page = layoutPages[selectedPageIndex];
+  const [minx, miny, maxx, maxy] = page.bbox;
+  const centerX = (minx + maxx) / 2;
+  const [lon, lat] = transformerState.transformer.inverse([centerX, maxy]);
+  const latlng = L.latLng(lat, lon);
+
+  selectionSelectEl.innerHTML = "";
+  for (let i = 1; i <= layoutPages.length; i += 1) {
+    const opt = document.createElement("option");
+    opt.value = String(i);
+    opt.textContent = `Side ${i}`;
+    if (i === selectedPageIndex + 1) opt.selected = true;
+    selectionSelectEl.appendChild(opt);
+  }
+  const nextOrientation = page.orientation === "portrait" ? "Landskab" : "Portræt";
+  orientationToggleEl.textContent = `Skift til ${nextOrientation}`;
+  if (removePageBtn) {
+    removePageBtn.classList.toggle("hidden", selectedPageIndex === null);
+  }
+
+  if (!selectionMarker) {
+    selectionMarker = L.marker(latlng, {
+      interactive: true,
+      icon: L.divIcon({
+        className: "",
+        html: "",
+        iconSize: null,
+      }),
+    }).addTo(mapInstance);
+  } else {
+    selectionMarker.setLatLng(latlng);
+  }
+
+  const markerEl = selectionMarker.getElement();
+  if (markerEl && selectionBarEl.parentElement !== markerEl) {
+    selectionBarEl.classList.remove("hidden");
+    markerEl.appendChild(selectionBarEl);
+  }
+}
+
+function updatePageLayerBounds(index) {
+  if (!pageLayers[index] || !transformerState) return;
+  const bounds = bboxToLatLngBounds(layoutPages[index].bbox, transformerState.transformer);
+  pageLayers[index].setBounds(bounds);
+  if (pageLabelLayers[index] && bounds) {
+    pageLabelLayers[index].setLatLng(bounds.getNorthEast());
+  }
+}
+
+function getContainerPointFromEvent(event) {
+  if (!mapInstance) return null;
+  if (event?.containerPoint) return event.containerPoint;
+  const original = event?.originalEvent ?? event;
+  const touch = original?.touches?.[0] || original?.changedTouches?.[0];
+  if (touch) {
+    return mapInstance.mouseEventToContainerPoint(touch);
+  }
+  if (!original) return null;
+  return mapInstance.mouseEventToContainerPoint(original);
+}
+
+function startDrag(event, index) {
+  if (!transformerState) return;
+  const point = getContainerPointFromEvent(event);
+  if (!point) return;
+  const latlng = mapInstance.containerPointToLatLng(point);
+  const [startX, startY] = transformerState.transformer.forward([
+    latlng.lng,
+    latlng.lat,
+  ]);
+  dragState = {
+    index,
+    startUtm: [startX, startY],
+    startBBox: layoutPages[index].bbox.slice(),
+  };
+  if (mapInstance) {
+    mapInstance.dragging.disable();
+  }
+  bindDragListeners();
+}
+
+function handleDocumentMove(event) {
+  if (!dragState || !transformerState || !mapInstance) return;
+  const point = getContainerPointFromEvent(event);
+  if (!point) return;
+  const latlng = mapInstance.containerPointToLatLng(point);
+  const [currentX, currentY] = transformerState.transformer.forward([
+    latlng.lng,
+    latlng.lat,
+  ]);
+  const dx = currentX - dragState.startUtm[0];
+  const dy = currentY - dragState.startUtm[1];
+  const nextBBox = [
+    dragState.startBBox[0] + dx,
+    dragState.startBBox[1] + dy,
+    dragState.startBBox[2] + dx,
+    dragState.startBBox[3] + dy,
+  ];
+  layoutPages[dragState.index].bbox = nextBBox;
+  updatePageLayerBounds(dragState.index);
+  updateSelectionBar(point);
+}
+
+function bindDragListeners() {
+  if (dragListenersActive) return;
+  dragListenersActive = true;
+  document.addEventListener("mousemove", handleDocumentMove);
+  document.addEventListener("mouseup", stopDrag);
+  document.addEventListener("touchmove", handleDocumentMove, { passive: false });
+  document.addEventListener("touchend", stopDrag);
+}
+
+function unbindDragListeners() {
+  if (!dragListenersActive) return;
+  dragListenersActive = false;
+  document.removeEventListener("mousemove", handleDocumentMove);
+  document.removeEventListener("mouseup", stopDrag);
+  document.removeEventListener("touchmove", handleDocumentMove);
+  document.removeEventListener("touchend", stopDrag);
+}
+
+function stopDrag(event) {
+  if (!dragState) return;
+  if (event?.preventDefault) {
+    event.preventDefault();
+  }
+  dragState = null;
+  unbindDragListeners();
+  if (mapInstance) {
+    mapInstance.dragging.enable();
+  }
+}
+
+function toggleSelectedOrientation() {
+  if (selectedPageIndex === null || !layoutPages[selectedPageIndex]) return;
+  const page = layoutPages[selectedPageIndex];
+  const nextOrientation = page.orientation === "portrait" ? "landscape" : "portrait";
+  const metrics = pageGroundSpan(
+    selections.scale,
+    DEFAULT_DPI,
+    selections.paper,
+    nextOrientation
+  );
+  const [minx, miny, maxx, maxy] = page.bbox;
+  const cx = (minx + maxx) / 2;
+  const cy = (miny + maxy) / 2;
+  const nextBBox = bboxFromCenter(cx, cy, metrics.wM, metrics.hM);
+  layoutPages[selectedPageIndex] = {
+    ...page,
+    bbox: nextBBox,
+    orientation: nextOrientation,
+    wPx: metrics.wPx,
+    hPx: metrics.hPx,
+    wM: metrics.wM,
+    hM: metrics.hM,
+  };
+  updatePageLayerBounds(selectedPageIndex);
+  updateSelectionBar();
+}
+
+function removePage(index) {
+  if (index === null || index === undefined) return;
+  if (!layoutPages[index]) return;
+  layoutPages.splice(index, 1);
+  if (!layoutPages.length) {
+    resetLayoutState();
+    setStatus("Alle sider fjernet.");
+    return;
+  }
+  selectedPageIndex = Math.min(index, layoutPages.length - 1);
+  renderPageOverlays();
+  updateSelectionBar();
+}
+
+function movePageById(pageId, nextIndex) {
+  const currentIndex = layoutPages.findIndex((page) => page.id === pageId);
+  if (currentIndex < 0) return;
+  const clamped = Math.max(0, Math.min(nextIndex, layoutPages.length - 1));
+  if (currentIndex === clamped) return;
+  const [page] = layoutPages.splice(currentIndex, 1);
+  layoutPages.splice(clamped, 0, page);
+  selectedPageIndex = clamped;
+  renderPageOverlays();
+  updateSelectionBar();
+}
+
+function addPageAtCenter() {
+  if (!mapInstance || !transformerState) {
+    setStatus("Upload en GPX for at tilføje sider.");
+    return;
+  }
+  const center = mapInstance.getCenter();
+  const [centerX, centerY] = transformerState.transformer.forward([
+    center.lng,
+    center.lat,
+  ]);
+  const orientation =
+    selections.orientation === "auto" ? "portrait" : selections.orientation;
+  const metrics = pageGroundSpan(
+    selections.scale,
+    DEFAULT_DPI,
+    selections.paper,
+    orientation
+  );
+  const bbox = bboxFromCenter(centerX, centerY, metrics.wM, metrics.hM);
+  const newPage = {
+    id: nextPageId,
+    bbox,
+    orientation,
+    wPx: metrics.wPx,
+    hPx: metrics.hPx,
+    wM: metrics.wM,
+    hM: metrics.hM,
+  };
+  nextPageId += 1;
+  if (!layoutPages.length) {
+    layoutPages = [newPage];
+    selectedPageIndex = 0;
+  } else {
+    const insertIndex = Math.floor(layoutPages.length / 2);
+    layoutPages.splice(insertIndex, 0, newPage);
+    selectedPageIndex = insertIndex;
+  }
+  isLayoutReady = true;
+  isLayoutDirty = false;
+  renderPageOverlays();
+  updateLayoutButtons();
+  updateSelectionBar();
+  setStatus("Ny side tilføjet.");
 }
 
 function minMax(values) {
@@ -361,6 +923,8 @@ function computeAdaptivePages(xs, ys, options) {
       orientation: best.orientation,
       wPx: best.wPx,
       hPx: best.hPx,
+      wM: best.wM,
+      hM: best.hM,
     });
 
     if (best.endIndex >= maxIndex) break;
@@ -769,7 +1333,7 @@ async function fetchWmtsStitchedImage(bbox, widthPx, heightPx, epsgCode, layerId
   return createImageBitmap(out);
 }
 
-function drawTrackOnCanvas(ctx, xs, ys, bbox, width, height) {
+function drawTrackOnCanvas(ctx, xs, ys, bbox, width, height, color) {
   const [minx, miny, maxx, maxy] = bbox;
   const toPixel = (x, y) => {
     const px = ((x - minx) / (maxx - minx)) * width;
@@ -777,7 +1341,7 @@ function drawTrackOnCanvas(ctx, xs, ys, bbox, width, height) {
     return [px, py];
   };
 
-  ctx.strokeStyle = "#ff0000";
+  ctx.strokeStyle = color;
   ctx.lineWidth = TRACK_STROKE_PX;
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
@@ -865,42 +1429,6 @@ function drawDeclinationLabel(ctx, declinationTrue, convergence, width, height) 
   });
 }
 
-function createPreviewCard(index) {
-  const previewCard = document.createElement("div");
-  previewCard.className = "preview-card loading";
-
-  const img = document.createElement("img");
-  img.alt = "";
-  img.src =
-    "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
-
-  const label = document.createElement("p");
-  label.textContent = `Side ${index + 1}`;
-
-  previewCard.appendChild(img);
-  previewCard.appendChild(label);
-  previewCard.addEventListener("click", () => {
-    if (!viewerUrls[index]) return;
-    openViewer(index);
-  });
-  previewGrid.appendChild(previewCard);
-  return { card: previewCard, img, label };
-}
-
-function resizeCanvasForPreview(canvas, maxWidth = 480) {
-  const ratio = canvas.width / canvas.height;
-  const targetWidth = Math.min(maxWidth, canvas.width);
-  const targetHeight = Math.round(targetWidth / ratio);
-
-  const previewCanvas = document.createElement("canvas");
-  previewCanvas.width = targetWidth;
-  previewCanvas.height = targetHeight;
-
-  const ctx = previewCanvas.getContext("2d");
-  ctx.drawImage(canvas, 0, 0, targetWidth, targetHeight);
-  return previewCanvas;
-}
-
 function canvasToBlob(canvas, type, quality) {
   return new Promise((resolve) => {
     canvas.toBlob((blob) => resolve(blob), type, quality);
@@ -943,18 +1471,10 @@ async function runWithConcurrency(taskFns, limit) {
   await Promise.all(workers);
 }
 
-async function renderGPXToPdf(file, options) {
-  const pointsLonLat =
-    options.pointsLonLat ?? parseGPX(await file.text());
-
+function computeLayoutPages(pointsLonLat, options) {
   const { transformer, epsg } = transformerForPoints(pointsLonLat);
   const { xs, ys } = projectPoints(pointsLonLat, transformer);
   const bbox = bboxFromPoints(xs, ys);
-  const modelDate = new Date();
-  const declinationModel = options.showDeclination
-    ? geomagnetism.model()
-    : null;
-
   const overlap = clampOverlap(options.overlap);
   let pages = [];
   let statusLine = "";
@@ -995,20 +1515,44 @@ async function renderGPXToPdf(file, options) {
       orientation: options.orientation,
       wPx,
       hPx,
+      wM,
+      hM,
     }));
 
     statusLine = `Sider: ${rows} rækker x ${cols} kolonner | ${options.paper} | 1:${options.scale} | overlap ${(overlap * 100).toFixed(1)}%`;
   }
 
-  setStatus(statusLine);
+  return { pages, xs, ys, epsg, transformer, statusLine };
+}
+
+async function renderGPXToPdf(file, options) {
+  const pointsLonLat =
+    options.pointsLonLat ?? parseGPX(await file.text());
+
+  const { transformer, epsg } = transformerForPoints(pointsLonLat);
+  const { xs, ys } = projectPoints(pointsLonLat, transformer);
+  const modelDate = new Date();
+  const declinationModel = options.showDeclination
+    ? geomagnetism.model()
+    : null;
+
+  let pages = options.pages;
+  let statusLine = "";
+  if (!pages || !pages.length) {
+    const layout = computeLayoutPages(pointsLonLat, options);
+    pages = layout.pages;
+    statusLine = layout.statusLine;
+  }
+
+  if (statusLine) {
+    setStatus(statusLine);
+  }
   setRenderProgress(0, pages.length, false);
 
   const pdfDoc = await PDFDocument.create();
   const results = Array.from({ length: pages.length });
   let completed = 0;
   const progress = createRenderProgressUpdater(pages.length);
-  viewerUrls = Array.from({ length: pages.length });
-  const previewCards = pages.map((_, idx) => createPreviewCard(idx));
 
   const tasks = pages.map((pageInfo, idx) => async () => {
     const { bbox: pageBBox, wPx, hPx } = pageInfo;
@@ -1050,7 +1594,15 @@ async function renderGPXToPdf(file, options) {
     const ctx = canvas.getContext("2d");
     ctx.drawImage(baseImg, 0, 0, wPx, hPx);
     ctx.drawImage(gridImg, 0, 0, wPx, hPx);
-    drawTrackOnCanvas(ctx, xs, ys, pageBBox, wPx, hPx);
+    drawTrackOnCanvas(
+      ctx,
+      xs,
+      ys,
+      pageBBox,
+      wPx,
+      hPx,
+      options.trackColor ?? "#ff0000"
+    );
     drawPageLabel(ctx, options.scale, epsg);
     if (declinationModel) {
       const centerX = (pageBBox[0] + pageBBox[2]) / 2;
@@ -1071,20 +1623,7 @@ async function renderGPXToPdf(file, options) {
       throw new Error("Kunne ikke oprette sidebillede.");
     }
 
-    const previewCanvas = resizeCanvasForPreview(canvas);
-    const previewBlob = await canvasToBlob(previewCanvas, "image/jpeg", 0.7);
-
-    results[idx] = { pngBlob, previewBlob };
-    const viewerUrl = URL.createObjectURL(pngBlob);
-    viewerUrls[idx] = viewerUrl;
-
-    if (previewBlob) {
-      const previewUrl = URL.createObjectURL(previewBlob);
-      previewUrls.push(previewUrl);
-      previewCards[idx].img.src = previewUrl;
-      previewCards[idx].img.alt = `Forhåndsvisning side ${idx + 1}`;
-    }
-    previewCards[idx].card.classList.remove("loading");
+    results[idx] = { pngBlob };
     completed += 1;
     progress.update(completed);
   });
@@ -1118,6 +1657,9 @@ async function renderGPXToPdf(file, options) {
 }
 
 setupSegmentedControls();
+setupColorPicker();
+setupSidebarToggle();
+initMap();
 
 const controlsForm = document.getElementById("controls");
 const fileInput = document.getElementById("gpxFile");
@@ -1131,31 +1673,67 @@ function updateFileMeta(file, pointsLonLat) {
   fileMetaEl.classList.remove("hidden");
 }
 
+function getOverlapValue() {
+  const overlapInput = Number(document.getElementById("overlap").value);
+  return Number.isFinite(overlapInput)
+    ? overlapInput / 100
+    : DEFAULT_OVERLAP;
+}
+
+function generateLayout() {
+  if (!cachedPoints) {
+    setStatus("Vælg en GPX-fil.");
+    return;
+  }
+  clearDownload();
+  setStatus("Beregner layout...", true);
+  const overlapValue = getOverlapValue();
+  const layout = computeLayoutPages(cachedPoints, {
+    scale: selections.scale,
+    dpi: DEFAULT_DPI,
+    paper: selections.paper,
+    orientation: selections.orientation,
+    overlap: overlapValue,
+  });
+  layoutPages = layout.pages;
+  ensurePageIds(layoutPages);
+  isLayoutReady = true;
+  isLayoutDirty = false;
+  selectedPageIndex = null;
+  setProgress(3, [1, 2]);
+  setStatus(layout.statusLine || "Layout klar.");
+  updateLayoutButtons();
+  renderPageOverlays();
+  updateSelectionBar();
+}
+
 async function handleFileSelection(file) {
   if (!file) return;
   selectedFile = file;
   cachedPoints = null;
-  hasGenerated = false;
   renderBtn.textContent = "Generér kort-PDF";
-  previewSection.classList.add("hidden");
+  clearDownload();
+  resetLayoutState();
   setStatus("Læser GPX...");
   try {
     const text = await file.text();
     const points = parseGPX(text);
     cachedPoints = points;
+    transformerState = transformerForPoints(points);
     updateFileMeta(file, points);
+    updateTrackLayer(points);
     setProgress(2, [1]);
-    setStatus("GPX indlæst. Vælg layout.");
-    renderBtn.disabled = false;
-    renderBtn.classList.add("ready");
+    setStatus("GPX indlæst. Klik Lav layout.");
+    updateLayoutButtons();
     const nextFocus = document.querySelector("[data-paper=\"A4\"]");
     if (nextFocus) nextFocus.focus();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     setStatus(`Fejl: ${message}`);
     fileMetaEl.classList.add("hidden");
-    renderBtn.disabled = true;
-    renderBtn.classList.remove("ready");
+    transformerState = null;
+    clearTrackLayer();
+    resetLayoutState();
   }
 }
 
@@ -1189,100 +1767,52 @@ dropzoneEl.addEventListener("drop", (event) => {
   }
 });
 
-function openViewer(index) {
-  const url = viewerUrls[index];
-  if (!url) return;
-  viewerIndex = index;
-  viewerImageEl.onload = () => {
-    fitViewerImage();
-  };
-  viewerImageEl.src = url;
-  viewerEl.classList.remove("hidden");
-}
-
-function closeViewer() {
-  viewerEl.classList.add("hidden");
-  viewerImageEl.src = "";
-}
-
-function showViewerPage(nextIndex) {
-  if (!viewerUrls.length) return;
-  const total = viewerUrls.length;
-  const next = (nextIndex + total) % total;
-  const url = viewerUrls[next];
-  if (!url) return;
-  viewerIndex = next;
-  viewerImageEl.onload = () => {
-    fitViewerImage();
-  };
-  viewerImageEl.src = url;
-}
-
-function applyViewerZoom() {
-  const width = viewerBaseSize.width * viewerZoom;
-  const height = viewerBaseSize.height * viewerZoom;
-  viewerImageEl.style.width = `${width}px`;
-  viewerImageEl.style.height = `${height}px`;
-  viewerCaptionEl.textContent = `Side ${viewerIndex + 1} af ${viewerUrls.length} · ${Math.round(viewerZoom * 100)}%`;
-}
-
-function fitViewerImage() {
-  const maxW = Math.min(window.innerWidth * 0.9, 980);
-  const maxH = window.innerHeight * 0.8;
-  const ratio = Math.min(
-    maxW / viewerImageEl.naturalWidth,
-    maxH / viewerImageEl.naturalHeight,
-    1
-  );
-  viewerBaseSize = {
-    width: viewerImageEl.naturalWidth * ratio,
-    height: viewerImageEl.naturalHeight * ratio,
-  };
-  viewerZoom = 1;
-  applyViewerZoom();
-}
-
-function setViewerZoom(nextZoom) {
-  viewerZoom = Math.min(Math.max(nextZoom, 0.5), 3);
-  applyViewerZoom();
-}
-
-viewerCloseEl.addEventListener("click", closeViewer);
-viewerPrevEl.addEventListener("click", () => showViewerPage(viewerIndex - 1));
-viewerNextEl.addEventListener("click", () => showViewerPage(viewerIndex + 1));
-viewerZoomOutEl.addEventListener("click", () => setViewerZoom(viewerZoom - 0.2));
-viewerZoomInEl.addEventListener("click", () => setViewerZoom(viewerZoom + 0.2));
-viewerZoomResetEl.addEventListener("click", () => fitViewerImage());
-
-viewerStageEl.addEventListener("wheel", (event) => {
-  event.preventDefault();
-  const delta = event.deltaY > 0 ? -0.1 : 0.1;
-  setViewerZoom(viewerZoom + delta);
+layoutBtn.addEventListener("click", () => {
+  generateLayout();
 });
 
-window.addEventListener("resize", () => {
-  if (viewerEl.classList.contains("hidden")) return;
-  fitViewerImage();
+orientationToggleEl.addEventListener("click", (event) => {
+  event.stopPropagation();
+  toggleSelectedOrientation();
 });
 
-viewerEl.addEventListener("click", (event) => {
-  if (event.target === viewerEl) {
-    closeViewer();
-  }
+if (removePageBtn) {
+  removePageBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    removePage(selectedPageIndex);
+  });
+}
+
+if (addPageBtn) {
+  addPageBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    addPageAtCenter();
+  });
+}
+
+if (selectionSelectEl) {
+  selectionSelectEl.addEventListener("change", () => {
+    if (selectedPageIndex === null) return;
+    const nextIndex = Number(selectionSelectEl.value) - 1;
+    const page = layoutPages[selectedPageIndex];
+    if (!page) return;
+    movePageById(page.id, nextIndex);
+  });
+}
+
+selectionBarEl.addEventListener("click", (event) => {
+  event.stopPropagation();
 });
 
-window.addEventListener("keydown", (event) => {
-  if (viewerEl.classList.contains("hidden")) return;
-  if (event.key === "Escape") closeViewer();
-  if (event.key === "ArrowLeft") showViewerPage(viewerIndex - 1);
-  if (event.key === "ArrowRight") showViewerPage(viewerIndex + 1);
-  if (event.key === "+" || event.key === "=") setViewerZoom(viewerZoom + 0.2);
-  if (event.key === "-") setViewerZoom(viewerZoom - 0.2);
+const overlapInputEl = document.getElementById("overlap");
+overlapInputEl.addEventListener("input", () => {
+  markLayoutDirty("Overlap er ændret. Klik Genlav layout.");
 });
+
 
 controlsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  clearPreview();
+  clearDownload();
 
   if (!selectedFile) {
     setStatus("Vælg en GPX-fil.");
@@ -1294,15 +1824,20 @@ controlsForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  const overlapInput = Number(document.getElementById("overlap").value);
-  const overlapValue = Number.isFinite(overlapInput)
-    ? overlapInput / 100
-    : DEFAULT_OVERLAP;
+  if (!isLayoutReady || !layoutPages.length) {
+    setStatus("Lav layout før du genererer PDF.");
+    return;
+  }
+
+  if (isLayoutDirty) {
+    setStatus("Layout matcher ikke de valgte indstillinger. Klik Genlav layout.");
+    return;
+  }
+
+  const overlapValue = getOverlapValue();
   const showDeclination = document.getElementById("declinationToggle").checked;
   renderBtn.disabled = true;
   renderBtn.classList.remove("ready");
-  previewSection.classList.remove("hidden");
-  previewSection.scrollIntoView({ behavior: "smooth", block: "start" });
   setProgress(3, [1, 2]);
   setStatus("Forbereder PDF...", true);
 
@@ -1315,14 +1850,15 @@ controlsForm.addEventListener("submit", async (event) => {
       overlap: overlapValue,
       layer: DEFAULT_LAYER,
       showDeclination,
+      trackColor: selections.trackColor,
       pointsLonLat: cachedPoints,
+      pages: layoutPages,
     });
 
     setDownload(pdfBlob);
     setProgress(3, [1, 2, 3]);
     setStatus("PDF klar.");
     setRenderProgress(0, 1, false);
-    hasGenerated = true;
     renderBtn.textContent = "Generér kort-PDF igen";
     renderBtn.classList.add("ready");
   } catch (error) {
@@ -1331,7 +1867,7 @@ controlsForm.addEventListener("submit", async (event) => {
       ? "Kortfliser kunne ikke hentes (mulig CORS-fejl). Prøv igen eller brug et andet netværk."
       : message;
     setStatus(`Fejl: ${friendly}`);
-    setProgress(2, [1]);
+    setProgress(3, [1, 2]);
     setRenderProgress(0, 1, false);
   } finally {
     renderBtn.disabled = false;
@@ -1339,4 +1875,23 @@ controlsForm.addEventListener("submit", async (event) => {
   }
 });
 
+window.addEventListener("resize", () => {
+  if (mapInstance) {
+    mapInstance.invalidateSize();
+  }
+  updateSelectionBar();
+});
+
+window.addEventListener("keydown", (event) => {
+  if (!layoutPages.length) return;
+  const target = event.target;
+  if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) {
+    return;
+  }
+  if (event.key === "Backspace" || event.key === "Delete") {
+    removePage(selectedPageIndex);
+  }
+});
+
 setProgress(1, []);
+updateLayoutButtons();
