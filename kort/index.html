@@ -110,13 +110,13 @@
                   <label class="field">
                     <span>Orientering</span>
                     <div class="segmented" role="group" aria-label="Orientering">
-                      <button type="button" data-orientation="portrait" class="active">
+                      <button type="button" data-orientation="portrait">
                         Portræt
                       </button>
                       <button type="button" data-orientation="landscape">
                         Landskab
                       </button>
-                      <button type="button" data-orientation="auto">
+                      <button type="button" data-orientation="auto" class="active">
                         Auto
                       </button>
                     </div>
@@ -147,6 +147,25 @@
                         required
                       />
                     </label>
+                    <label class="field">
+                      <span>
+                        Sikkerhedsmargin (%)
+                        <span
+                          class="tooltip"
+                          data-tooltip="Mindste afstand fra spor til kant. Højere værdier giver mere terræn omkring sporet."
+                          aria-label="Mindste afstand fra spor til kant. Højere værdier giver mere terræn omkring sporet."
+                        >?</span>
+                      </span>
+                      <input
+                        type="number"
+                        id="margin"
+                        min="0"
+                        max="45"
+                        step="1"
+                        value="15"
+                        required
+                      />
+                    </label>
 
                     <label class="field">
                       <span>Magnetisk deklination (per side)</span>
@@ -157,9 +176,6 @@
               </div>
 
               <div class="button-row">
-                <button id="layoutBtn" type="button" class="secondary" disabled>
-                  Lav layout
-                </button>
                 <button id="renderBtn" type="submit" class="primary" disabled>
                   Generér kort-PDF
                 </button>
@@ -183,6 +199,30 @@
             </div>
           </section>
         </aside>
+      </div>
+    </div>
+
+    <div class="modal-overlay" id="confirmModal" aria-hidden="true">
+      <div
+        class="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirmTitle"
+        aria-describedby="confirmText"
+      >
+        <h3 id="confirmTitle">Overskriv layout?</h3>
+        <p id="confirmText">
+          Du har ændret layoutet manuelt. Hvis du ændrer indstillingerne,
+          overskrives dine ændringer. Vil du fortsætte?
+        </p>
+        <div class="modal-actions">
+          <button type="button" class="secondary" id="confirmCancelBtn">
+            Annuller
+          </button>
+          <button type="button" class="primary" id="confirmAcceptBtn">
+            Fortsæt
+          </button>
+        </div>
       </div>
     </div>
 

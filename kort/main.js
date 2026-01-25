@@ -28,6 +28,7 @@ const WMTS_TILE_SIZE = 256;
 const USE_WMTS_FOR_BASEMAP = true;
 const DEFAULT_DPI = 300;
 const DEFAULT_OVERLAP = 0.05;
+const DEFAULT_MARGIN = 0.15;
 const TRACK_STROKE_PX = 4;
 const PAGE_RENDER_CONCURRENCY = 2;
 const PAGE_STYLE = {
@@ -58,7 +59,6 @@ const dropzoneEl = document.getElementById("dropzone");
 const downloadLink = document.getElementById("downloadLink");
 const renderBtn = document.getElementById("renderBtn");
 const renderProgressEl = document.getElementById("renderProgress");
-const layoutBtn = document.getElementById("layoutBtn");
 const mapEl = document.getElementById("map");
 const selectionBarEl = document.getElementById("selectionBar");
 const selectionSelectEl = document.getElementById("selectionSelect");
@@ -68,11 +68,15 @@ const addPageBtn = document.getElementById("addPageBtn");
 const colorPickerEl = document.getElementById("colorPicker");
 const sidebarEl = document.getElementById("sidebar");
 const sidebarToggleEl = document.getElementById("sidebarToggle");
+const confirmModalEl = document.getElementById("confirmModal");
+const confirmTextEl = document.getElementById("confirmText");
+const confirmAcceptBtn = document.getElementById("confirmAcceptBtn");
+const confirmCancelBtn = document.getElementById("confirmCancelBtn");
 
 const selections = {
   paper: "A4",
   scale: 50000,
-  orientation: "portrait",
+  orientation: "auto",
   trackColor: "#ff3b30",
 };
 
@@ -88,12 +92,13 @@ let pageColors = [];
 let selectionMarker = null;
 let layoutPages = [];
 let selectedPageIndex = null;
-let isLayoutDirty = false;
+let hasManualEdits = false;
 let isLayoutReady = false;
 let downloadUrl = null;
 let dragState = null;
 let dragListenersActive = false;
 let nextPageId = 1;
+let confirmResolver = null;
 
 function setStatus(message, isLoading = false) {
   statusTextEl.textContent = message;
@@ -135,11 +140,11 @@ function resetLayoutState() {
   clearPageOverlays();
   layoutPages = [];
   isLayoutReady = false;
-  isLayoutDirty = false;
+  hasManualEdits = false;
   selectedPageIndex = null;
   pageColors = [];
   updateSelectionBar();
-  updateLayoutButtons();
+  updateRenderButtonState();
 }
 
 function setProgress(activeStep, doneSteps) {
@@ -162,32 +167,60 @@ function setupSegmentedControls() {
   const scaleGroup = document.querySelector("[aria-label='Målestok']");
   const orientationGroup = document.querySelector("[aria-label='Orientering']");
 
-  paperGroup.addEventListener("click", (event) => {
+  paperGroup.addEventListener("click", async (event) => {
     const button = event.target.closest("button");
     if (!button) return;
-    selections.paper = button.dataset.paper;
+    const nextPaper = button.dataset.paper;
+    if (nextPaper === selections.paper) return;
+    if (!(await confirmOverrideManualEdits())) {
+      setSegmentedActive(paperGroup, selections.paper, "paper");
+      return;
+    }
+    selections.paper = nextPaper;
     setSegmentedActive(paperGroup, selections.paper, "paper");
-    markLayoutDirty("Papirstørrelsen er ændret. Klik Genlav layout.");
+    if (cachedPoints) {
+      generateLayout("Papirstørrelsen er ændret. Layout opdateres...");
+    }
   });
 
-  scaleGroup.addEventListener("click", (event) => {
+  scaleGroup.addEventListener("click", async (event) => {
     const button = event.target.closest("button");
     if (!button) return;
-    selections.scale = Number(button.dataset.scale);
+    const nextScale = Number(button.dataset.scale);
+    if (nextScale === selections.scale) return;
+    if (!(await confirmOverrideManualEdits())) {
+      setSegmentedActive(scaleGroup, String(selections.scale), "scale");
+      return;
+    }
+    selections.scale = nextScale;
     setSegmentedActive(scaleGroup, String(selections.scale), "scale");
-    markLayoutDirty("Målestokken er ændret. Klik Genlav layout.");
+    if (cachedPoints) {
+      generateLayout("Målestokken er ændret. Layout opdateres...");
+    }
   });
 
-  orientationGroup.addEventListener("click", (event) => {
+  orientationGroup.addEventListener("click", async (event) => {
     const button = event.target.closest("button");
     if (!button) return;
-    selections.orientation = button.dataset.orientation;
+    const nextOrientation = button.dataset.orientation;
+    if (nextOrientation === selections.orientation) return;
+    if (!(await confirmOverrideManualEdits())) {
+      setSegmentedActive(
+        orientationGroup,
+        String(selections.orientation),
+        "orientation"
+      );
+      return;
+    }
+    selections.orientation = nextOrientation;
     setSegmentedActive(
       orientationGroup,
       String(selections.orientation),
       "orientation"
     );
-    markLayoutDirty("Orienteringen er ændret. Klik Genlav layout.");
+    if (cachedPoints) {
+      generateLayout("Orienteringen er ændret. Layout opdateres...");
+    }
   });
 }
 
@@ -228,28 +261,80 @@ function setupSidebarToggle() {
   });
 }
 
-function updateLayoutButtons() {
-  if (!layoutBtn) return;
-  layoutBtn.disabled = !cachedPoints;
-  layoutBtn.textContent = isLayoutReady ? "Genlav layout" : "Lav layout";
-  if (isLayoutReady && !isLayoutDirty) {
-    renderBtn.disabled = false;
-    renderBtn.classList.add("ready");
-  } else {
-    renderBtn.disabled = true;
-    renderBtn.classList.remove("ready");
-  }
+function setupConfirmModal() {
+  if (!confirmModalEl || !confirmAcceptBtn || !confirmCancelBtn) return;
+  confirmAcceptBtn.addEventListener("click", () => {
+    handleConfirmChoice(true);
+  });
+  confirmCancelBtn.addEventListener("click", () => {
+    handleConfirmChoice(false);
+  });
+  confirmModalEl.addEventListener("click", (event) => {
+    if (event.target === confirmModalEl) {
+      handleConfirmChoice(false);
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && confirmModalEl.classList.contains("open")) {
+      handleConfirmChoice(false);
+    }
+  });
 }
 
-function markLayoutDirty(message) {
-  if (!isLayoutReady) return;
-  isLayoutDirty = true;
+function updateRenderButtonState() {
+  const ready = Boolean(isLayoutReady && layoutPages.length);
+  renderBtn.disabled = !ready;
+  renderBtn.classList.toggle("ready", ready);
+}
+
+function markLayoutCustomized(message) {
+  hasManualEdits = true;
   clearDownload();
-  updateLayoutButtons();
-  setProgress(2, [1]);
   if (message) {
     setStatus(message);
   }
+}
+
+function setConfirmModalOpen(isOpen) {
+  if (!confirmModalEl) return;
+  confirmModalEl.classList.toggle("open", isOpen);
+  confirmModalEl.setAttribute("aria-hidden", String(!isOpen));
+}
+
+function handleConfirmChoice(accepted) {
+  if (!confirmResolver) return;
+  const resolve = confirmResolver;
+  confirmResolver = null;
+  setConfirmModalOpen(false);
+  resolve(accepted);
+}
+
+function showConfirmModal(message) {
+  if (!confirmModalEl || !confirmTextEl || !confirmAcceptBtn || !confirmCancelBtn) {
+    return Promise.resolve(window.confirm(message));
+  }
+  if (confirmResolver) {
+    return Promise.resolve(false);
+  }
+
+  confirmTextEl.textContent = message;
+  setConfirmModalOpen(true);
+  confirmAcceptBtn.focus();
+
+  return new Promise((resolve) => {
+    confirmResolver = resolve;
+  });
+}
+
+async function confirmOverrideManualEdits() {
+  if (!hasManualEdits) return true;
+  const ok = await showConfirmModal(
+    "Du har ændret layoutet manuelt. Hvis du ændrer indstillingerne, overskrives dine ændringer. Vil du fortsætte?"
+  );
+  if (ok) {
+    hasManualEdits = false;
+  }
+  return ok;
 }
 
 function parseGPX(xmlText) {
@@ -628,6 +713,7 @@ function startDrag(event, index) {
     index,
     startUtm: [startX, startY],
     startBBox: layoutPages[index].bbox.slice(),
+    didMove: false,
   };
   if (mapInstance) {
     mapInstance.dragging.disable();
@@ -646,6 +732,9 @@ function handleDocumentMove(event) {
   ]);
   const dx = currentX - dragState.startUtm[0];
   const dy = currentY - dragState.startUtm[1];
+  if (dx !== 0 || dy !== 0) {
+    dragState.didMove = true;
+  }
   const nextBBox = [
     dragState.startBBox[0] + dx,
     dragState.startBBox[1] + dy,
@@ -680,6 +769,9 @@ function stopDrag(event) {
   if (event?.preventDefault) {
     event.preventDefault();
   }
+  if (dragState.didMove) {
+    markLayoutCustomized("Layout er ændret manuelt.");
+  }
   dragState = null;
   unbindDragListeners();
   if (mapInstance) {
@@ -712,12 +804,14 @@ function toggleSelectedOrientation() {
   };
   updatePageLayerBounds(selectedPageIndex);
   updateSelectionBar();
+  markLayoutCustomized("Layout er ændret manuelt.");
 }
 
 function removePage(index) {
   if (index === null || index === undefined) return;
   if (!layoutPages[index]) return;
   layoutPages.splice(index, 1);
+  markLayoutCustomized("Layout er ændret manuelt.");
   if (!layoutPages.length) {
     resetLayoutState();
     setStatus("Alle sider fjernet.");
@@ -738,6 +832,7 @@ function movePageById(pageId, nextIndex) {
   selectedPageIndex = clamped;
   renderPageOverlays();
   updateSelectionBar();
+  markLayoutCustomized("Layout er ændret manuelt.");
 }
 
 function addPageAtCenter() {
@@ -778,11 +873,10 @@ function addPageAtCenter() {
     selectedPageIndex = insertIndex;
   }
   isLayoutReady = true;
-  isLayoutDirty = false;
   renderPageOverlays();
-  updateLayoutButtons();
+  updateRenderButtonState();
   updateSelectionBar();
-  setStatus("Ny side tilføjet.");
+  markLayoutCustomized("Ny side tilføjet.");
 }
 
 function minMax(values) {
@@ -803,6 +897,10 @@ function bboxFromPoints(xs, ys) {
 
 function clampOverlap(overlap) {
   return Math.max(0.0, Math.min(overlap, 0.9));
+}
+
+function clampMargin(margin) {
+  return Math.max(0.0, Math.min(margin, 0.45));
 }
 
 function cumulativeDistances(xs, ys) {
@@ -864,15 +962,31 @@ function lastIndexInside(bbox, xs, ys, startIndex) {
   return last;
 }
 
+function candidateCenterIndices(startIndex, endIndex) {
+  const maxCandidates = 10;
+  const span = endIndex - startIndex;
+  const step = Math.max(1, Math.floor(span / maxCandidates));
+  const indices = [];
+  for (let i = startIndex; i <= endIndex; i += step) {
+    indices.push(i);
+  }
+  if (indices[indices.length - 1] !== endIndex) {
+    indices.push(endIndex);
+  }
+  return indices;
+}
+
 function computeAdaptivePages(xs, ys, options) {
   const overlap = clampOverlap(options.overlap);
+  const margin = clampMargin(options.margin ?? DEFAULT_MARGIN);
+  const innerFraction = Math.max(overlap, margin);
   const distances = cumulativeDistances(xs, ys);
   const maxIndex = xs.length - 1;
   const metricsByOrientation = {
     portrait: pageGroundSpan(options.scale, options.dpi, options.paper, "portrait"),
     landscape: pageGroundSpan(options.scale, options.dpi, options.paper, "landscape"),
   };
-  const windowFactor = 0.6;
+  const windowFactor = 0.9;
   const minWindowPoints = 8;
 
   const pages = [];
@@ -887,33 +1001,86 @@ function computeAdaptivePages(xs, ys, options) {
         windowMeters,
         minWindowPoints
       );
-      const center = meanPoints(xs, ys, startIndex, centerEnd);
-      let bbox = bboxFromCenter(center.x, center.y, metrics.wM, metrics.hM);
-      if (!pointInBBox(xs[startIndex], ys[startIndex], bbox)) {
-        bbox = bboxFromCenter(xs[startIndex], ys[startIndex], metrics.wM, metrics.hM);
+      const centerIndices = candidateCenterIndices(startIndex, centerEnd);
+      let bestCandidate = null;
+
+      centerIndices.forEach((centerIdx) => {
+        const center = meanPoints(xs, ys, startIndex, centerIdx);
+        const bbox = bboxFromCenter(center.x, center.y, metrics.wM, metrics.hM);
+        const marginX = (metrics.wM * innerFraction) / 2;
+        const marginY = (metrics.hM * innerFraction) / 2;
+        const inner = shrinkBBox(bbox, marginX, marginY);
+        if (!pointInBBox(xs[startIndex], ys[startIndex], inner)) {
+          return;
+        }
+        const endIndex = lastIndexInside(inner, xs, ys, startIndex);
+        const coveredDist = distances[endIndex] - distances[startIndex];
+        const segmentCenter = meanPoints(xs, ys, startIndex, endIndex);
+        const offsetX = (segmentCenter.x - center.x) / (metrics.wM / 2);
+        const offsetY = (segmentCenter.y - center.y) / (metrics.hM / 2);
+        const centerPenalty = Math.hypot(offsetX, offsetY);
+        const candidate = {
+          orientation,
+          bbox,
+          wPx: metrics.wPx,
+          hPx: metrics.hPx,
+          wM: metrics.wM,
+          hM: metrics.hM,
+          endIndex,
+          coveredDist,
+          centerPenalty,
+        };
+
+        if (!bestCandidate) {
+          bestCandidate = candidate;
+          return;
+        }
+        if (
+          candidate.endIndex > bestCandidate.endIndex ||
+          (candidate.endIndex === bestCandidate.endIndex &&
+            (candidate.coveredDist > bestCandidate.coveredDist ||
+              (candidate.coveredDist === bestCandidate.coveredDist &&
+                candidate.centerPenalty < bestCandidate.centerPenalty)))
+        ) {
+          bestCandidate = candidate;
+        }
+      });
+
+      if (!bestCandidate) {
+        const fallbackCenter = { x: xs[startIndex], y: ys[startIndex] };
+        const bbox = bboxFromCenter(
+          fallbackCenter.x,
+          fallbackCenter.y,
+          metrics.wM,
+          metrics.hM
+        );
+        const marginX = (metrics.wM * innerFraction) / 2;
+        const marginY = (metrics.hM * innerFraction) / 2;
+        const inner = shrinkBBox(bbox, marginX, marginY);
+        const endIndex = lastIndexInside(inner, xs, ys, startIndex);
+        bestCandidate = {
+          orientation,
+          bbox,
+          wPx: metrics.wPx,
+          hPx: metrics.hPx,
+          wM: metrics.wM,
+          hM: metrics.hM,
+          endIndex,
+          coveredDist: distances[endIndex] - distances[startIndex],
+          centerPenalty: 0,
+        };
       }
-      const marginX = (metrics.wM * overlap) / 2;
-      const marginY = (metrics.hM * overlap) / 2;
-      const inner = shrinkBBox(bbox, marginX, marginY);
-      const endIndex = lastIndexInside(inner, xs, ys, startIndex);
-      const coveredDist = distances[endIndex] - distances[startIndex];
-      return {
-        orientation,
-        bbox,
-        wPx: metrics.wPx,
-        hPx: metrics.hPx,
-        wM: metrics.wM,
-        hM: metrics.hM,
-        endIndex,
-        coveredDist,
-      };
+
+      return bestCandidate;
     });
 
     let best = candidates[0];
     if (
       candidates[1].endIndex > best.endIndex ||
       (candidates[1].endIndex === best.endIndex &&
-        candidates[1].coveredDist > best.coveredDist)
+        (candidates[1].coveredDist > best.coveredDist ||
+          (candidates[1].coveredDist === best.coveredDist &&
+            candidates[1].centerPenalty < best.centerPenalty)))
     ) {
       best = candidates[1];
     }
@@ -1480,8 +1647,9 @@ function computeLayoutPages(pointsLonLat, options) {
   let statusLine = "";
 
   if (options.orientation === "auto") {
-    pages = computeAdaptivePages(xs, ys, { ...options, overlap });
-    statusLine = `Sider: ${pages.length} | ${options.paper} | 1:${options.scale} | overlap ${(overlap * 100).toFixed(1)}% | auto`;
+    const margin = clampMargin(options.margin ?? DEFAULT_MARGIN);
+    pages = computeAdaptivePages(xs, ys, { ...options, overlap, margin });
+    statusLine = `Sider: ${pages.length} | ${options.paper} | 1:${options.scale} | overlap ${(overlap * 100).toFixed(1)}% | margin ${(margin * 100).toFixed(0)}% | auto`;
   } else {
     const { wPx, hPx, wM, hM } = pageGroundSpan(
       options.scale,
@@ -1659,6 +1827,7 @@ async function renderGPXToPdf(file, options) {
 setupSegmentedControls();
 setupColorPicker();
 setupSidebarToggle();
+setupConfirmModal();
 initMap();
 
 const controlsForm = document.getElementById("controls");
@@ -1680,29 +1849,38 @@ function getOverlapValue() {
     : DEFAULT_OVERLAP;
 }
 
-function generateLayout() {
+function getMarginValue() {
+  const marginInput = Number(document.getElementById("margin").value);
+  return Number.isFinite(marginInput)
+    ? marginInput / 100
+    : DEFAULT_MARGIN;
+}
+
+function generateLayout(statusMessage) {
   if (!cachedPoints) {
     setStatus("Vælg en GPX-fil.");
     return;
   }
   clearDownload();
-  setStatus("Beregner layout...", true);
+  setStatus(statusMessage || "Beregner layout...", true);
   const overlapValue = getOverlapValue();
+  const marginValue = getMarginValue();
   const layout = computeLayoutPages(cachedPoints, {
     scale: selections.scale,
     dpi: DEFAULT_DPI,
     paper: selections.paper,
     orientation: selections.orientation,
     overlap: overlapValue,
+    margin: marginValue,
   });
   layoutPages = layout.pages;
   ensurePageIds(layoutPages);
   isLayoutReady = true;
-  isLayoutDirty = false;
+  hasManualEdits = false;
   selectedPageIndex = null;
   setProgress(3, [1, 2]);
   setStatus(layout.statusLine || "Layout klar.");
-  updateLayoutButtons();
+  updateRenderButtonState();
   renderPageOverlays();
   updateSelectionBar();
 }
@@ -1723,8 +1901,9 @@ async function handleFileSelection(file) {
     updateFileMeta(file, points);
     updateTrackLayer(points);
     setProgress(2, [1]);
-    setStatus("GPX indlæst. Klik Lav layout.");
-    updateLayoutButtons();
+    setStatus("GPX indlæst. Layout beregnes...");
+    updateRenderButtonState();
+    generateLayout();
     const nextFocus = document.querySelector("[data-paper=\"A4\"]");
     if (nextFocus) nextFocus.focus();
   } catch (error) {
@@ -1767,10 +1946,6 @@ dropzoneEl.addEventListener("drop", (event) => {
   }
 });
 
-layoutBtn.addEventListener("click", () => {
-  generateLayout();
-});
-
 orientationToggleEl.addEventListener("click", (event) => {
   event.stopPropagation();
   toggleSelectedOrientation();
@@ -1805,8 +1980,33 @@ selectionBarEl.addEventListener("click", (event) => {
 });
 
 const overlapInputEl = document.getElementById("overlap");
-overlapInputEl.addEventListener("input", () => {
-  markLayoutDirty("Overlap er ændret. Klik Genlav layout.");
+overlapInputEl.dataset.prev = overlapInputEl.value;
+overlapInputEl.addEventListener("input", async () => {
+  if (!(await confirmOverrideManualEdits())) {
+    overlapInputEl.value = overlapInputEl.dataset.prev || overlapInputEl.value;
+    return;
+  }
+  const nextValue = Number(overlapInputEl.value);
+  if (!Number.isFinite(nextValue)) return;
+  overlapInputEl.dataset.prev = overlapInputEl.value;
+  if (cachedPoints) {
+    generateLayout("Overlap er ændret. Layout opdateres...");
+  }
+});
+
+const marginInputEl = document.getElementById("margin");
+marginInputEl.dataset.prev = marginInputEl.value;
+marginInputEl.addEventListener("input", async () => {
+  if (!(await confirmOverrideManualEdits())) {
+    marginInputEl.value = marginInputEl.dataset.prev || marginInputEl.value;
+    return;
+  }
+  const nextValue = Number(marginInputEl.value);
+  if (!Number.isFinite(nextValue)) return;
+  marginInputEl.dataset.prev = marginInputEl.value;
+  if (cachedPoints) {
+    generateLayout("Sikkerhedsmargin er ændret. Layout opdateres...");
+  }
 });
 
 
@@ -1825,16 +2025,12 @@ controlsForm.addEventListener("submit", async (event) => {
   }
 
   if (!isLayoutReady || !layoutPages.length) {
-    setStatus("Lav layout før du genererer PDF.");
-    return;
-  }
-
-  if (isLayoutDirty) {
-    setStatus("Layout matcher ikke de valgte indstillinger. Klik Genlav layout.");
+    setStatus("Layout er ikke klar endnu.");
     return;
   }
 
   const overlapValue = getOverlapValue();
+  const marginValue = getMarginValue();
   const showDeclination = document.getElementById("declinationToggle").checked;
   renderBtn.disabled = true;
   renderBtn.classList.remove("ready");
@@ -1848,6 +2044,7 @@ controlsForm.addEventListener("submit", async (event) => {
       paper: selections.paper,
       orientation: selections.orientation,
       overlap: overlapValue,
+      margin: marginValue,
       layer: DEFAULT_LAYER,
       showDeclination,
       trackColor: selections.trackColor,
@@ -1894,4 +2091,4 @@ window.addEventListener("keydown", (event) => {
 });
 
 setProgress(1, []);
-updateLayoutButtons();
+updateRenderButtonState();

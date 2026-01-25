@@ -669,3 +669,46 @@ h1 {
     transform: rotate(360deg);
   }
 }
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(30, 27, 22, 0.35);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 3000;
+}
+
+.modal-overlay.open {
+  display: flex;
+}
+
+.modal {
+  background: #fffdf9;
+  border: 1px solid #efe4d7;
+  border-radius: 18px;
+  padding: 22px;
+  width: min(92vw, 420px);
+  box-shadow: 0 18px 40px rgba(30, 27, 22, 0.22);
+}
+
+.modal h3 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+.modal p {
+  margin: 0 0 18px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
