@@ -17,6 +17,15 @@
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
       crossorigin=""
     />
+    <script>
+      if (location.hostname === "skispormodnord.dk") {
+        const script = document.createElement("script");
+        script.defer = true;
+        script.src = "https://cloud.umami.is/script.js";
+        script.dataset.websiteId = "b017043d-7ab8-4c20-a149-7509fbc1de38";
+        document.head.appendChild(script);
+      }
+    </script>
   </head>
   <body>
     <div class="app">
