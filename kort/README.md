@@ -42,6 +42,23 @@ Then open `http://localhost:5173/webapp/`.
 - Libraries: `proj4` (projection), `pdf-lib` (PDF), `geomagnetism` (declination)
 
 ## Map sources
-- WMTS base map: https://cache.kartverket.no/v1/wmts/1.0.0 (capabilities: https://cache.kartverket.no/v1/wmts/1.0.0/WMTSCapabilities.xml)
-- Base map WMS: https://wms.geonorge.no/skwms1/wms.topo (layer: topo)
-- Grid WMS: https://wms.geonorge.no/skwms1/wms.rutenett (layer: 1km_rutelinje)
+- WMTS base map (Kartverket WMTS v1, layer: toporaster)
+  - Provider: Kartverket
+  - License: Creative Commons BY 4.0 (CC BY 4.0)
+  - Service: https://cache.kartverket.no/v1/wmts/1.0.0 (capabilities: https://cache.kartverket.no/v1/wmts/1.0.0/WMTSCapabilities.xml)
+- Grid WMS (UTMrutenett, layer: 1km_rutelinje)
+  - Provider: Kartverket (GeoNorge)
+  - License: Creative Commons BY 4.0 (CC BY 4.0)
+  - Service: https://wms.geonorge.no/skwms1/wms.rutenett
+- Routes WMS (Tur- og friluftsruter WMS)
+  - Provider: Kartverket (GeoNorge)
+  - License: Creative Commons BY 4.0 (CC BY 4.0)
+  - Service: https://wms.geonorge.no/skwms1/wms.friluftsruter2
+- Height WMS (DTM)
+  - Provider: Kartverket (GeoNorge)
+  - License: Creative Commons BY 4.0 (CC BY 4.0)
+  - Service: https://wms.geonorge.no/skwms1/wms.hoyde-dtm
+- Weak ice WMS (SvekketIs1)
+  - Provider: NVE
+  - License: NLOD
+  - Service: https://kart.nve.no/enterprise/services/SvekketIs1/MapServer/WMSServer

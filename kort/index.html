@@ -40,6 +40,15 @@
                   loading="lazy"
                 />
               </div>
+              <div class="map-hint" id="mapHint">
+                <div class="map-hint-highlight" aria-hidden="true"></div>
+                <div class="map-hint-arrow" aria-hidden="true"></div>
+                <span class="map-hint-text">
+                  Upload en GPX fil til højre eller tryk på "Tilføj side" for at begynde.
+                  Du kan trække i siderne for at justere deres placering, og
+                  klikke på dem for at redigere.
+                </span>
+              </div>
               <button type="button" class="map-action" id="addPageBtn">
                 Tilføj side
               </button>
@@ -249,7 +258,14 @@
                     </label>
 
                     <label class="field">
-                      <span>Magnetisk deklination (per side)</span>
+                      <span>
+                        Magnetisk deklination (per side)
+                        <span
+                          class="tooltip"
+                          data-tooltip="Tilføjer information om magnetisk deklination til kortsiderne."
+                          aria-label="Tilføjer information om magnetisk deklination til kortsiderne."
+                        >?</span>
+                      </span>
                       <input type="checkbox" id="declinationToggle" checked />
                     </label>
                     <div class="layer-card">
@@ -264,7 +280,14 @@
                         </span>
                         <input type="checkbox" id="pdfJpegToggle" checked />
                         <div class="range-field hidden" id="jpegQualityGroup">
-                          <span>JPEG-kvalitet</span>
+                          <span>
+                            JPEG-kvalitet
+                            <span
+                              class="tooltip"
+                              data-tooltip="Højere værdi giver bedre kvalitet, men større filstørrelse."
+                              aria-label="Højere værdi giver bedre kvalitet, men større filstørrelse."
+                            >?</span>
+                          </span>
                           <div class="range-row">
                             <input
                               type="range"
@@ -329,7 +352,7 @@
                 </details>
               </div>
 
-              <div class="button-row">
+              <div class="button-row sticky-render">
                 <div class="render-status" id="renderStatus" aria-live="polite">
                   <span class="spinner hidden" id="spinner"></span>
                   <span id="renderStatusText"></span>
@@ -341,6 +364,86 @@
               </div>
             </form>
           </section>
+
+          <footer class="sidebar-footer">
+            <div class="sidebar-footer-title">Kortdata og licens</div>
+            <table class="source-table">
+              <thead>
+                <tr>
+                  <th>Kortlag</th>
+                  <th>Udbyder</th>
+                  <th>Licens</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>WMTS basiskort (toporaster)</td>
+                  <td>Kartverket</td>
+                  <td>
+                    <a
+                      href="https://creativecommons.org/licenses/by/4.0/"
+                      target="_blank"
+                      rel="noopener"
+                    >
+                      CC BY 4.0
+                    </a>
+                  </td>
+                </tr>
+                <tr>
+                  <td>UTM-rutenett (WMS)</td>
+                  <td>Kartverket / GeoNorge</td>
+                  <td>
+                    <a
+                      href="https://creativecommons.org/licenses/by/4.0/"
+                      target="_blank"
+                      rel="noopener"
+                    >
+                      CC BY 4.0
+                    </a>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Tur- og friluftsruter (WMS)</td>
+                  <td>Kartverket / GeoNorge</td>
+                  <td>
+                    <a
+                      href="https://creativecommons.org/licenses/by/4.0/"
+                      target="_blank"
+                      rel="noopener"
+                    >
+                      CC BY 4.0
+                    </a>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Højde/DTM (WMS)</td>
+                  <td>Kartverket / GeoNorge</td>
+                  <td>
+                    <a
+                      href="https://creativecommons.org/licenses/by/4.0/"
+                      target="_blank"
+                      rel="noopener"
+                    >
+                      CC BY 4.0
+                    </a>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Svækket is (WMS)</td>
+                  <td>NVE</td>
+                  <td>
+                    <a
+                      href="https://data.norge.no/nlod/en/2.0"
+                      target="_blank"
+                      rel="noopener"
+                    >
+                      NLOD 2.0
+                    </a>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </footer>
         </aside>
       </div>
     </div>

@@ -1,5 +1,8 @@
 # Beautiful Jekyll
 
+Uses Umami for analytics and Supabase to track clicks for rendering PDF
+
+
 [![Gem Version](https://badge.fury.io/rb/beautiful-jekyll-theme.svg)](https://badge.fury.io/rb/beautiful-jekyll-theme)
 
 > By [Dean Attali](https://deanattali.com) &middot; [Demo](https://beautifuljekyll.com/)

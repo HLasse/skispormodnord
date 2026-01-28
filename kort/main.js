@@ -4,7 +4,6 @@ import { PDFDocument } from "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/+esm";
 
 const L = window.L;
 
-const WMS_BASE_URL = "https://wms.geonorge.no/skwms1/wms.topo";
 const WMS_GRID_URL = "https://wms.geonorge.no/skwms1/wms.rutenett";
 const WMS_ROUTE_URL = "https://wms.geonorge.no/skwms1/wms.friluftsruter2";
 const WMS_HEIGHT_URL = "https://wms.geonorge.no/skwms1/wms.hoyde-dtm";
@@ -39,7 +38,6 @@ const MAP_ATTRIBUTION = "&copy; Kartverket";
 // too many tiles at the highest zoom, we automatically step down.
 const WMTS_MAX_TILES_PER_PAGE = 120;
 const WMTS_TILE_SIZE = 256;
-const USE_WMTS_FOR_BASEMAP = true;
 const ROUTE_OVERLAY_OPACITY = 1;
 const DEFAULT_HEIGHT_OVERLAY_OPACITY = 0.2;
 const HEIGHT_OVERLAY_MIN_ZOOM = 10;
@@ -92,6 +90,7 @@ const downloadLink = document.getElementById("downloadLink");
 const renderBtn = document.getElementById("renderBtn");
 const renderProgressEl = document.getElementById("renderProgress");
 const mapEl = document.getElementById("map");
+const mapHintEl = document.getElementById("mapHint");
 const selectionBarEl = document.getElementById("selectionBar");
 const selectionSelectEl = document.getElementById("selectionSelect");
 const orientationToggleEl = document.getElementById("orientationToggle");
@@ -132,6 +131,7 @@ const pdfJpegToggleEl = document.getElementById("pdfJpegToggle");
 const jpegQualityGroupEl = document.getElementById("jpegQualityGroup");
 const jpegQualityEl = document.getElementById("jpegQuality");
 const jpegQualityValueEl = document.getElementById("jpegQualityValue");
+const MAP_HINT_SESSION_KEY = "gpx_map_hint_dismissed";
 
 const selections = {
   paper: "A4",
@@ -195,18 +195,71 @@ function setRenderProgress(completed, total, visible) {
   }
 }
 
+function isMapHintDismissed() {
+  try {
+    return sessionStorage.getItem(MAP_HINT_SESSION_KEY) === "1";
+  } catch (error) {
+    return false;
+  }
+}
+
+function dismissMapHint() {
+  if (!mapHintEl) return;
+  mapHintEl.classList.add("hidden");
+  try {
+    sessionStorage.setItem(MAP_HINT_SESSION_KEY, "1");
+  } catch (error) {
+    // Ignore storage failures (private mode, etc.)
+  }
+}
+
+function updateMapHintHighlight() {
+  if (!mapHintEl || !addPageBtn || !mapEl) return;
+  if (mapHintEl.classList.contains("hidden")) return;
+  const mapRect = mapEl.getBoundingClientRect();
+  const btnRect = addPageBtn.getBoundingClientRect();
+  const padding = 10;
+  const x = btnRect.left - mapRect.left - padding;
+  const y = btnRect.top - mapRect.top - padding;
+  const w = btnRect.width + padding * 2;
+  const h = btnRect.height + padding * 2;
+  const arrowLength = 58;
+  const arrowGap = 2;
+  const diagonalOffset = arrowLength / Math.SQRT2;
+  const arrowX = x - arrowGap - diagonalOffset;
+  const arrowY = y - arrowGap - diagonalOffset;
+  mapHintEl.style.setProperty("--hint-x", `${x}px`);
+  mapHintEl.style.setProperty("--hint-y", `${y}px`);
+  mapHintEl.style.setProperty("--hint-w", `${w}px`);
+  mapHintEl.style.setProperty("--hint-h", `${h}px`);
+  mapHintEl.style.setProperty("--hint-arrow-x", `${arrowX}px`);
+  mapHintEl.style.setProperty("--hint-arrow-y", `${arrowY}px`);
+}
+
+function getPdfFilename() {
+  if (!selectedFile?.name) return "min_rute.pdf";
+  const base = selectedFile.name.replace(/\.gpx$/i, "");
+  const safeBase = base || "min_rute";
+  return `${safeBase}.pdf`;
+}
+
 function setDownload(blob) {
   if (downloadUrl) {
     URL.revokeObjectURL(downloadUrl);
   }
+  const filename = getPdfFilename();
   downloadUrl = URL.createObjectURL(blob);
   if (downloadLink) {
     downloadLink.href = downloadUrl;
-    downloadLink.download = "trail_map.pdf";
+    downloadLink.download = filename;
     downloadLink.classList.remove("disabled");
-    return;
   }
   window.open(downloadUrl, "_blank", "noopener");
+  const tempLink = document.createElement("a");
+  tempLink.href = downloadUrl;
+  tempLink.download = filename;
+  tempLink.rel = "noopener";
+  tempLink.click();
   setTimeout(() => {
     if (downloadUrl) {
       URL.revokeObjectURL(downloadUrl);
@@ -385,6 +438,7 @@ function setupSidebarToggle() {
     if (mapInstance) {
       setTimeout(() => {
         mapInstance.invalidateSize();
+        updateMapHintHighlight();
       }, 320);
     }
   });
@@ -411,7 +465,7 @@ function setupConfirmModal() {
 }
 
 function updateRenderButtonState() {
-  const ready = Boolean(layoutPages.length);
+  const ready = Boolean(isLayoutReady);
   renderBtn.disabled = !ready;
   renderBtn.classList.toggle("ready", ready);
 }
@@ -1043,6 +1097,32 @@ function initMap() {
   mapInstance.on("zoomend moveend", () => {
     updateSelectionBar();
   });
+
+  if (mapHintEl) {
+    if (isMapHintDismissed()) {
+      mapHintEl.classList.add("hidden");
+    } else {
+      updateMapHintHighlight();
+      const hintEvents = [
+        "mousedown",
+        "touchstart",
+        "zoomstart",
+        "movestart",
+        "dragstart",
+        "click",
+      ];
+      const handleHintDismiss = () => {
+        if (mapHintEl.classList.contains("hidden")) return;
+        dismissMapHint();
+        hintEvents.forEach((eventName) =>
+          mapInstance.off(eventName, handleHintDismiss)
+        );
+      };
+      hintEvents.forEach((eventName) =>
+        mapInstance.on(eventName, handleHintDismiss)
+      );
+    }
+  }
 }
 
 function updateTrackLayer(pointsLonLat) {
@@ -1465,8 +1545,18 @@ function addPageAtCenter() {
     selectedPageIndex = insertIndex;
   }
   isLayoutReady = true;
+  if (renderBtn) {
+    renderBtn.disabled = false;
+    renderBtn.classList.add("ready");
+    renderBtn.removeAttribute("disabled");
+  }
   renderPageOverlays();
   updateRenderButtonState();
+  if (renderBtn) {
+    renderBtn.disabled = false;
+    renderBtn.classList.add("ready");
+    renderBtn.removeAttribute("disabled");
+  }
   updateSelectionBar();
   markLayoutCustomized("Ny side tilføjet.");
 }
@@ -2582,21 +2672,13 @@ async function renderGPXToPdf(file, options) {
 
   const tasks = pages.map((pageInfo, idx) => async () => {
     const { bbox: pageBBox, wPx, hPx } = pageInfo;
-    const baseImgPromise = USE_WMTS_FOR_BASEMAP
-      ? fetchWmtsStitchedImage(pageBBox, wPx, hPx, epsg, options.layer)
-      : fetchWmsImage(
-          {
-            baseUrl: WMS_BASE_URL,
-            layer: options.layer,
-            styles: "",
-            format: "image/png",
-            transparent: false,
-          },
-          pageBBox,
-          wPx,
-          hPx,
-          epsg
-        );
+    const baseImgPromise = fetchWmtsStitchedImage(
+      pageBBox,
+      wPx,
+      hPx,
+      epsg,
+      options.layer
+    );
 
     const gridImgPromise = fetchWmsImage(
       {
@@ -3046,7 +3128,21 @@ if (removePageBtn) {
 if (addPageBtn) {
   addPageBtn.addEventListener("click", (event) => {
     event.stopPropagation();
+    if (mapInstance) {
+      const targetZoom = 10;
+      if (mapInstance.getZoom() < targetZoom) {
+        mapInstance.flyTo(mapInstance.getCenter(), targetZoom, {
+          animate: true,
+          duration: 0.8,
+        });
+      }
+    }
     addPageAtCenter();
+    if (renderBtn && layoutPages.length) {
+      renderBtn.disabled = false;
+      renderBtn.classList.add("ready");
+      renderBtn.removeAttribute("disabled");
+    }
   });
 }
 
@@ -3349,6 +3445,7 @@ window.addEventListener("resize", () => {
   if (mapInstance) {
     mapInstance.invalidateSize();
   }
+  updateMapHintHighlight();
   updateSelectionBar();
 });
 
