@@ -1,54 +1,92 @@
-export async function handler(event) {
-  if (event.httpMethod !== "POST") {
-    return { statusCode: 405, body: "Method Not Allowed" };
+export async function handler(req) {
+  // Netlify passes request details in this `req` object
+  if (req.httpMethod !== "POST") {
+    return {
+      statusCode: 405,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Method Not Allowed" }),
+    };
   }
 
   const SUPABASE_URL = process.env.SUPABASE_URL;
-  const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  // Parse payload (allow empty body)
-  let body = {};
-  try {
-    body = event.body ? JSON.parse(event.body) : {};
-  } catch {
-    body = {};
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    return {
+      statusCode: 500,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Missing SUPABASE env vars" }),
+    };
   }
 
-  const eventName = typeof body.event === "string" ? body.event : "button_click";
-  const path = typeof body.path === "string" ? body.path : null;
+  // Parse JSON body
+  let payload;
+  try {
+    payload = req.body ? JSON.parse(req.body) : {};
+  } catch {
+    return {
+      statusCode: 400,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Invalid JSON" }),
+    };
+  }
 
-  // Best-effort country.
-  // Netlify commonly provides `x-country` on requests passing through their proxy.  [oai_citation:1‡Netlify Support Forums](https://answers.netlify.com/t/x-country-header-returning-incorrect-code/96035)
+  const event = typeof payload.event === "string" ? payload.event : null;
+  const path = typeof payload.path === "string" ? payload.path : null;
+
+  if (!event || !path) {
+    return {
+      statusCode: 400,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Missing required fields: event, path" }),
+    };
+  }
+
+  // Put everything except event/path/timestamp into data
+  // (We prefer server-side created_at; ignore client timestamp if present)
+  // eslint-disable-next-line no-unused-vars
+  const { event: _e, path: _p, timestamp: _t, ...rest } = payload;
+
+  const headers = req.headers || {};
+
+  // Best-effort country header (may be null depending on setup)
   const country =
-    event.headers["x-country"] ||
-    event.headers["X-Country"] ||
+    headers["x-country"] ||
+    headers["X-Country"] ||
+    headers["x-nf-country"] || // sometimes present
+    headers["X-NF-Country"] ||
     null;
 
-  const userAgent = event.headers["user-agent"] || null;
+  const userAgent = headers["user-agent"] || headers["User-Agent"] || null;
 
-  const insertPayload = {
-    event: eventName,
-    country,
+  const row = {
+    event,
     path,
+    data: rest, // jsonb
+    country,
     user_agent: userAgent,
-    // created_at is set by default in DB (now())
   };
 
   const res = await fetch(`${SUPABASE_URL}/rest/v1/click_events`, {
     method: "POST",
     headers: {
-      apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
       "Content-Type": "application/json",
       Prefer: "return=minimal",
     },
-    body: JSON.stringify(insertPayload),
+    body: JSON.stringify(row),
   });
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    return { statusCode: 500, body: `Insert failed: ${text}` };
+    return {
+      statusCode: 500,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Insert failed", details: text }),
+    };
   }
 
+  // No content needed
   return { statusCode: 204, body: "" };
 }

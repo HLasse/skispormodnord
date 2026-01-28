@@ -3031,6 +3031,30 @@ controlsForm.addEventListener("submit", async (event) => {
   const heightLayers = getSelectedHeightLayers();
   const heightOpacity = effectiveHeightOpacity();
   const trackOpacity = selections.trackOpacity;
+  fetch("/.netlify/functions/log_click", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  keepalive: true,
+  body: JSON.stringify({
+    event: "generate-pdf",
+    path: location.pathname,
+    scale: selections.scale,
+    paper: selections.paper,
+    orientation: selections.orientation,
+    overlap: overlapValue,
+    margin: marginValue,
+    dpi: dpiValue,
+    showDeclination,
+    showSkiRoutes,
+    showHikeRoutes,
+    heightLayers,
+    heightOpacity,
+    trackOpacity,
+    trackColor: selections.trackColor,
+    pageImageFormat,
+    pageImageQuality,
+  }),
+}).catch(() => {});
   window.umami?.track("generate-pdf", {
     scale: selections.scale,
     paper: selections.paper,
