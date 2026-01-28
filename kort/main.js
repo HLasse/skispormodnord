@@ -8,10 +8,18 @@ const WMS_BASE_URL = "https://wms.geonorge.no/skwms1/wms.topo";
 const WMS_GRID_URL = "https://wms.geonorge.no/skwms1/wms.rutenett";
 const WMS_ROUTE_URL = "https://wms.geonorge.no/skwms1/wms.friluftsruter2";
 const WMS_HEIGHT_URL = "https://wms.geonorge.no/skwms1/wms.hoyde-dtm";
+const WMS_WEAK_ICE_URL =
+  "https://kart.nve.no/enterprise/services/SvekketIs1/MapServer/WMSServer";
 const WMS_ROUTE_LAYERS = {
   ski: "Skiloype",
   hike: "Fotrute",
 };
+const WMS_WEAK_ICE_LAYERS = [
+  "SvekketIs",
+  "SvekketIsElv",
+  "SvekketIsIkkeVurdert",
+  "OppsprukketIsLangsLand",
+];
 
 // Kartverket cache (WMTS/XYZ-style REST endpoints)
 // Capabilities are documented here: https://cache.kartverket.no/
@@ -74,7 +82,8 @@ const PAPER_SIZES_MM = {
 };
 const ALLOWED_SCALES = new Set([25000, 50000, 100000]);
 
-const statusTextEl = document.getElementById("statusText");
+const renderStatusEl = document.getElementById("renderStatus");
+const statusTextEl = document.getElementById("renderStatusText");
 const spinnerEl = document.getElementById("spinner");
 const progressEl = document.getElementById("progress");
 const fileMetaEl = document.getElementById("fileMeta");
@@ -102,9 +111,13 @@ const heightLegendImgEl = document.getElementById("heightLegendImg");
 const heightLayerToggleEls = Array.from(
   document.querySelectorAll(".height-layer-toggle")
 );
+const weakIceToggleEl = document.getElementById("weakIceToggle");
 const heightOpacityGroupEl = document.getElementById("heightOpacityGroup");
 const heightOpacityEl = document.getElementById("heightOpacity");
 const heightOpacityValueEl = document.getElementById("heightOpacityValue");
+const weakIceOpacityGroupEl = document.getElementById("weakIceOpacityGroup");
+const weakIceOpacityEl = document.getElementById("weakIceOpacity");
+const weakIceOpacityValueEl = document.getElementById("weakIceOpacityValue");
 const heightMaskGroupEl = document.getElementById("heightMaskGroup");
 const heightMaskGreenAEl = document.getElementById("heightMaskGreenA");
 const heightMaskGreenBEl = document.getElementById("heightMaskGreenB");
@@ -112,6 +125,9 @@ const overlapValueEl = document.getElementById("overlapValue");
 const marginValueEl = document.getElementById("marginValue");
 const trackOpacityEl = document.getElementById("trackOpacity");
 const trackOpacityValueEl = document.getElementById("trackOpacityValue");
+const trackWidthEl = document.getElementById("trackWidth");
+const trackWidthValueEl = document.getElementById("trackWidthValue");
+const trackControlsEl = document.getElementById("trackControls");
 const pdfJpegToggleEl = document.getElementById("pdfJpegToggle");
 const jpegQualityGroupEl = document.getElementById("jpegQualityGroup");
 const jpegQualityEl = document.getElementById("jpegQuality");
@@ -123,6 +139,7 @@ const selections = {
   orientation: "auto",
   trackColor: "#ff3b30",
   trackOpacity: 0.8,
+  trackWidth: TRACK_STROKE_PX,
 };
 
 let selectedFile = null;
@@ -138,6 +155,7 @@ let pageColors = [];
 let skiRoutesLayer = null;
 let hikeRoutesLayer = null;
 let heightOverlayLayers = new Map();
+let weakIceOverlayLayers = new Map();
 let heightOverlayBounds = null;
 const heightTileBitmapCache = new Map();
 const heightTileMaskedCache = new Map();
@@ -156,8 +174,14 @@ let gpxWorkerRequestId = 0;
 const gpxWorkerPending = new Map();
 
 function setStatus(message, isLoading = false) {
-  statusTextEl.textContent = message;
-  spinnerEl.classList.toggle("hidden", !isLoading);
+  if (!renderStatusEl || !statusTextEl) return;
+  const text = String(message || "");
+  const show = isLoading || text.startsWith("Fejl");
+  statusTextEl.textContent = show ? text : "";
+  renderStatusEl.classList.toggle("visible", show);
+  if (spinnerEl) {
+    spinnerEl.classList.toggle("hidden", !isLoading);
+  }
 }
 
 function setRenderProgress(completed, total, visible) {
@@ -176,14 +200,26 @@ function setDownload(blob) {
     URL.revokeObjectURL(downloadUrl);
   }
   downloadUrl = URL.createObjectURL(blob);
-  downloadLink.href = downloadUrl;
-  downloadLink.download = "trail_map.pdf";
-  downloadLink.classList.remove("disabled");
+  if (downloadLink) {
+    downloadLink.href = downloadUrl;
+    downloadLink.download = "trail_map.pdf";
+    downloadLink.classList.remove("disabled");
+    return;
+  }
+  window.open(downloadUrl, "_blank", "noopener");
+  setTimeout(() => {
+    if (downloadUrl) {
+      URL.revokeObjectURL(downloadUrl);
+      downloadUrl = null;
+    }
+  }, 60000);
 }
 
 function clearDownload() {
-  downloadLink.classList.add("disabled");
-  downloadLink.removeAttribute("href");
+  if (downloadLink) {
+    downloadLink.classList.add("disabled");
+    downloadLink.removeAttribute("href");
+  }
   if (downloadUrl) {
     URL.revokeObjectURL(downloadUrl);
     downloadUrl = null;
@@ -205,6 +241,7 @@ function resetLayoutState() {
 }
 
 function setProgress(activeStep, doneSteps) {
+  if (!progressEl) return;
   progressEl.querySelectorAll("li").forEach((item) => {
     const step = Number(item.dataset.step);
     item.classList.toggle("done", doneSteps.includes(step));
@@ -217,6 +254,11 @@ function setSegmentedActive(group, value, attr) {
     const isActive = btn.dataset[attr] === value;
     btn.classList.toggle("active", isActive);
   });
+}
+
+function setTrackControlsVisible(isVisible) {
+  if (!trackControlsEl) return;
+  trackControlsEl.classList.toggle("hidden", !isVisible);
 }
 
 function setupSegmentedControls() {
@@ -320,6 +362,21 @@ function setupTrackOpacity() {
   });
 }
 
+function setupTrackWidth() {
+  if (!trackWidthEl) return;
+  selections.trackWidth = Number(trackWidthEl.value);
+  updateTrackWidthLabel();
+  trackWidthEl.addEventListener("input", () => {
+    const value = Number(trackWidthEl.value);
+    if (!Number.isFinite(value)) return;
+    selections.trackWidth = value;
+    updateTrackWidthLabel();
+    if (trackLayer) {
+      trackLayer.setStyle({ weight: selections.trackWidth });
+    }
+  });
+}
+
 function setupSidebarToggle() {
   if (!sidebarToggleEl || !sidebarEl) return;
   sidebarEl.classList.add("open");
@@ -354,7 +411,7 @@ function setupConfirmModal() {
 }
 
 function updateRenderButtonState() {
-  const ready = Boolean(isLayoutReady && layoutPages.length);
+  const ready = Boolean(layoutPages.length);
   renderBtn.disabled = !ready;
   renderBtn.classList.toggle("ready", ready);
 }
@@ -362,6 +419,7 @@ function updateRenderButtonState() {
 function markLayoutCustomized(message) {
   hasManualEdits = true;
   clearDownload();
+  updateRenderButtonState();
   if (message) {
     setStatus(message);
   }
@@ -579,6 +637,13 @@ function updateTrackOpacityLabel() {
   trackOpacityValueEl.textContent = `${percent}%`;
 }
 
+function updateTrackWidthLabel() {
+  if (!trackWidthValueEl || !trackWidthEl) return;
+  const value = Number(trackWidthEl.value);
+  if (!Number.isFinite(value)) return;
+  trackWidthValueEl.textContent = `${value} px`;
+}
+
 function updateHeightOpacityLabel() {
   if (!heightOpacityValueEl || !heightOpacityEl) return;
   const value = Number(heightOpacityEl.value);
@@ -587,14 +652,11 @@ function updateHeightOpacityLabel() {
 }
 
 function getActiveHeightMaskColors() {
-  const active = [];
-  if (heightMaskGreenAEl?.checked) active.push(HEIGHT_OVERLAY_MASK_COLORS[0]);
-  if (heightMaskGreenBEl?.checked) active.push(HEIGHT_OVERLAY_MASK_COLORS[1]);
-  return active;
+  return [...HEIGHT_OVERLAY_MASK_COLORS];
 }
 
 function getHeightMaskKey() {
-  return `${heightMaskGreenAEl?.checked ? "1" : "0"}${heightMaskGreenBEl?.checked ? "1" : "0"}`;
+  return "11";
 }
 
 function pruneCache(cache, limit) {
@@ -671,6 +733,15 @@ function ensureHeightOverlayPane() {
   pane.style.pointerEvents = "none";
 }
 
+function ensureWeakIceOverlayPane() {
+  if (!mapInstance) return;
+  const existing = mapInstance.getPane("weakIceOverlayPane");
+  if (existing) return;
+  const pane = mapInstance.createPane("weakIceOverlayPane");
+  pane.style.zIndex = "330";
+  pane.style.pointerEvents = "none";
+}
+
 function createRouteLayer(layerName) {
   return L.tileLayer.wms(WMS_ROUTE_URL, {
     layers: layerName,
@@ -678,6 +749,17 @@ function createRouteLayer(layerName) {
     transparent: true,
     opacity: ROUTE_OVERLAY_OPACITY,
     pane: "routeOverlayPane",
+  });
+}
+
+function createWeakIceLayer(layerName) {
+  return L.tileLayer.wms(WMS_WEAK_ICE_URL, {
+    layers: layerName,
+    format: "image/png",
+    transparent: true,
+    opacity: effectiveWeakIceOpacity(),
+    pane: "weakIceOverlayPane",
+    minZoom: HEIGHT_OVERLAY_MIN_ZOOM,
   });
 }
 
@@ -826,10 +908,21 @@ function effectiveHeightOpacity() {
   return Number.isFinite(value) ? value : DEFAULT_HEIGHT_OVERLAY_OPACITY;
 }
 
+function effectiveWeakIceOpacity() {
+  if (!weakIceOpacityEl) return 1;
+  const value = Number(weakIceOpacityEl.value);
+  return Number.isFinite(value) ? value : 1;
+}
+
 function updateHeightOpacityVisibility() {
   if (!heightOpacityGroupEl) return;
   const anyOn = heightLayerToggleEls.some((toggle) => toggle.checked);
   heightOpacityGroupEl.classList.toggle("hidden", !anyOn);
+}
+
+function updateWeakIceOpacityVisibility() {
+  if (!weakIceOpacityGroupEl || !weakIceToggleEl) return;
+  weakIceOpacityGroupEl.classList.toggle("hidden", !weakIceToggleEl.checked);
 }
 
 function updateHeightMaskVisibility() {
@@ -892,6 +985,28 @@ function getSelectedHeightLayers() {
     .filter(Boolean);
 }
 
+function updateWeakIceOverlays() {
+  if (!mapInstance || !L) return;
+  ensureWeakIceOverlayPane();
+  const shouldShow = Boolean(weakIceToggleEl?.checked);
+  WMS_WEAK_ICE_LAYERS.forEach((layerName) => {
+    const existing = weakIceOverlayLayers.get(layerName);
+    if (shouldShow && !existing) {
+      const layer = createWeakIceLayer(layerName);
+      weakIceOverlayLayers.set(layerName, layer);
+      layer.addTo(mapInstance);
+    } else if (!shouldShow && existing) {
+      mapInstance.removeLayer(existing);
+      weakIceOverlayLayers.delete(layerName);
+    }
+  });
+}
+
+function getSelectedWeakIceLayers() {
+  if (!weakIceToggleEl?.checked) return [];
+  return [...WMS_WEAK_ICE_LAYERS];
+}
+
 function initMap() {
   if (mapInstance || !mapEl) return;
   if (!L) {
@@ -916,6 +1031,7 @@ function initMap() {
   pageLayerGroup = L.layerGroup().addTo(mapInstance);
   updateRouteOverlays();
   updateHeightOverlays();
+  updateWeakIceOverlays();
 
   mapInstance.on("click", (event) => {
     const target = event.originalEvent?.target;
@@ -938,7 +1054,7 @@ function updateTrackLayer(pointsLonLat) {
   const latLngs = pointsLonLat.map(([lon, lat]) => [lat, lon]);
   trackLayer = L.polyline(latLngs, {
     color: selections.trackColor,
-    weight: TRACK_STROKE_PX,
+    weight: selections.trackWidth,
     opacity: effectiveTrackOpacity(),
   }).addTo(mapInstance);
   const bounds = L.latLngBounds(latLngs);
@@ -1268,6 +1384,22 @@ function toggleSelectedOrientation() {
   markLayoutCustomized("Layout er ændret manuelt.");
 }
 
+function ensureProjectionForManualPages() {
+  if (transformerState && projectionState) return true;
+  if (!mapInstance) return false;
+  const center = mapInstance.getCenter();
+  const { transformer, epsg } = transformerForPoints([[center.lng, center.lat]]);
+  transformerState = { transformer, epsg };
+  projectionState = {
+    pointsLonLat: [],
+    transformer,
+    epsg,
+    xs: [],
+    ys: [],
+  };
+  return true;
+}
+
 function removePage(index) {
   if (index === null || index === undefined) return;
   if (!layoutPages[index]) return;
@@ -1297,8 +1429,8 @@ function movePageById(pageId, nextIndex) {
 }
 
 function addPageAtCenter() {
-  if (!mapInstance || !transformerState) {
-    setStatus("Upload en GPX for at tilføje sider.");
+  if (!mapInstance || !ensureProjectionForManualPages()) {
+    setStatus("Kortet er ikke klar endnu.");
     return;
   }
   const center = mapInstance.getCenter();
@@ -1306,8 +1438,7 @@ function addPageAtCenter() {
     center.lng,
     center.lat,
   ]);
-  const orientation =
-    selections.orientation === "auto" ? "portrait" : selections.orientation;
+  const orientation = "portrait";
   const metrics = pageGroundSpan(
     selections.scale,
     DEFAULT_DPI,
@@ -2178,7 +2309,7 @@ async function fetchWmtsStitchedImage(bbox, widthPx, heightPx, epsgCode, layerId
   return createImageBitmap(out);
 }
 
-function drawTrackOnCanvas(ctx, xs, ys, bbox, width, height, color, opacity) {
+function drawTrackOnCanvas(ctx, xs, ys, bbox, width, height, color, opacity, trackWidth) {
   const [minx, miny, maxx, maxy] = bbox;
   const toPixel = (x, y) => {
     const px = ((x - minx) / (maxx - minx)) * width;
@@ -2214,7 +2345,7 @@ function drawTrackOnCanvas(ctx, xs, ys, bbox, width, height, color, opacity) {
   ctx.save();
   ctx.globalAlpha = Number.isFinite(opacity) ? opacity : DEFAULT_TRACK_OPACITY;
   ctx.strokeStyle = color;
-  ctx.lineWidth = TRACK_STROKE_PX;
+  ctx.lineWidth = Number.isFinite(trackWidth) ? trackWidth : TRACK_STROKE_PX;
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
   ctx.stroke();
@@ -2404,15 +2535,25 @@ function heightOverlayScaleForMapScale(scale) {
 }
 
 async function renderGPXToPdf(file, options) {
-  const pointsLonLat = options.pointsLonLat ?? parseGPX(await file.text());
+  const pointsLonLat =
+    options.pointsLonLat ??
+    (file ? parseGPX(await file.text()) : []);
   const projection = options.projection ?? null;
   let transformer;
   let epsg;
-  let xs;
-  let ys;
+  let xs = [];
+  let ys = [];
   if (projection?.transformer && projection?.epsg && projection?.xs && projection?.ys) {
     ({ transformer, epsg, xs, ys } = projection);
+  } else if (projection?.transformer && projection?.epsg) {
+    transformer = projection.transformer;
+    epsg = projection.epsg;
+    xs = projection.xs ?? [];
+    ys = projection.ys ?? [];
   } else {
+    if (!pointsLonLat.length) {
+      throw new Error("Ingen GPX-fil valgt.");
+    }
     const fresh = buildProjection(pointsLonLat);
     ({ transformer, epsg, xs, ys } = fresh);
   }
@@ -2471,21 +2612,25 @@ async function renderGPXToPdf(file, options) {
       epsg
     );
 
-    const overlayPromises = [];
-    const heightLayers = options.heightLayers ?? [];
-    const heightOpacity = Number.isFinite(options.heightOpacity)
-      ? options.heightOpacity
-      : DEFAULT_HEIGHT_OVERLAY_OPACITY;
+  const overlayPromises = [];
+  const heightLayers = options.heightLayers ?? [];
+    const weakIceLayers = options.weakIceLayers ?? [];
+    const weakIceOpacity = Number.isFinite(options.weakIceOpacity)
+      ? options.weakIceOpacity
+      : 1;
+  const heightOpacity = Number.isFinite(options.heightOpacity)
+    ? options.heightOpacity
+    : DEFAULT_HEIGHT_OVERLAY_OPACITY;
     const heightScale = Number.isFinite(options.heightOverlayScaleFactor)
       ? options.heightOverlayScaleFactor
       : heightOverlayScaleForMapScale(options.scale);
     const heightWidthPx = Math.max(1, Math.round(wPx * heightScale));
     const heightHeightPx = Math.max(1, Math.round(hPx * heightScale));
-    const heightOverlayPromises = heightLayers.map((layerName) =>
-      fetchWmsImage(
-        {
-          baseUrl: WMS_HEIGHT_URL,
-          layer: layerName,
+  const heightOverlayPromises = heightLayers.map((layerName) =>
+    fetchWmsImage(
+      {
+        baseUrl: WMS_HEIGHT_URL,
+        layer: layerName,
           styles: "",
           format: "image/png",
           transparent: true,
@@ -2496,10 +2641,25 @@ async function renderGPXToPdf(file, options) {
         epsg
       )
     );
-    if (options.showSkiRoutes) {
-      overlayPromises.push(
-        fetchWmsImage(
-          {
+  const weakIceOverlayPromises = weakIceLayers.map((layerName) =>
+    fetchWmsImage(
+      {
+        baseUrl: WMS_WEAK_ICE_URL,
+        layer: layerName,
+        styles: "",
+        format: "image/png",
+        transparent: true,
+      },
+      pageBBox,
+      wPx,
+      hPx,
+      epsg
+    )
+  );
+  if (options.showSkiRoutes) {
+    overlayPromises.push(
+      fetchWmsImage(
+        {
             baseUrl: WMS_ROUTE_URL,
             layer: WMS_ROUTE_LAYERS.ski,
             styles: "",
@@ -2531,17 +2691,24 @@ async function renderGPXToPdf(file, options) {
       );
     }
 
-    const [baseImg, gridImg, ...overlayImgs] = await Promise.all([
-      baseImgPromise,
-      gridImgPromise,
-      ...heightOverlayPromises,
-      ...overlayPromises,
-    ]);
-    const heightOverlayImgs = overlayImgs.slice(0, heightOverlayPromises.length);
-    const routeOverlayImgs = overlayImgs.slice(heightOverlayPromises.length);
-    const activeMaskColors = getActiveHeightMaskColors();
-    const maskedHeightOverlays = heightOverlayImgs.map((img) => {
-      const canvas = document.createElement("canvas");
+  const [baseImg, gridImg, ...overlayImgs] = await Promise.all([
+    baseImgPromise,
+    gridImgPromise,
+    ...heightOverlayPromises,
+    ...weakIceOverlayPromises,
+    ...overlayPromises,
+  ]);
+  const heightOverlayImgs = overlayImgs.slice(0, heightOverlayPromises.length);
+  const weakIceOverlayImgs = overlayImgs.slice(
+    heightOverlayPromises.length,
+    heightOverlayPromises.length + weakIceOverlayPromises.length
+  );
+  const routeOverlayImgs = overlayImgs.slice(
+    heightOverlayPromises.length + weakIceOverlayPromises.length
+  );
+  const activeMaskColors = getActiveHeightMaskColors();
+  const maskedHeightOverlays = heightOverlayImgs.map((img) => {
+    const canvas = document.createElement("canvas");
       canvas.width = img.width;
       canvas.height = img.height;
       const maskCtx = canvas.getContext("2d", { willReadFrequently: true });
@@ -2557,17 +2724,25 @@ async function renderGPXToPdf(file, options) {
     const ctx = canvas.getContext("2d");
     ctx.drawImage(baseImg, 0, 0, wPx, hPx);
     ctx.drawImage(gridImg, 0, 0, wPx, hPx);
-    if (maskedHeightOverlays.length) {
+  if (maskedHeightOverlays.length) {
+    ctx.save();
+    ctx.globalAlpha = heightOpacity;
+    maskedHeightOverlays.forEach((img) => {
+      ctx.drawImage(img, 0, 0, wPx, hPx);
+    });
+    ctx.restore();
+  }
+    if (weakIceOverlayImgs.length) {
       ctx.save();
-      ctx.globalAlpha = heightOpacity;
-      maskedHeightOverlays.forEach((img) => {
+      ctx.globalAlpha = weakIceOpacity;
+      weakIceOverlayImgs.forEach((img) => {
         ctx.drawImage(img, 0, 0, wPx, hPx);
       });
       ctx.restore();
     }
-    if (routeOverlayImgs.length) {
-      ctx.save();
-      ctx.globalAlpha = ROUTE_OVERLAY_OPACITY;
+  if (routeOverlayImgs.length) {
+    ctx.save();
+    ctx.globalAlpha = ROUTE_OVERLAY_OPACITY;
       routeOverlayImgs.forEach((img) => {
         ctx.drawImage(img, 0, 0, wPx, hPx);
       });
@@ -2581,7 +2756,8 @@ async function renderGPXToPdf(file, options) {
       wPx,
       hPx,
       options.trackColor ?? "#ff0000",
-      options.trackOpacity
+      options.trackOpacity,
+      options.trackWidth
     );
     drawPageLabel(ctx, idx + 1, options.scale, epsg);
     if (declinationModel) {
@@ -2651,6 +2827,7 @@ async function renderGPXToPdf(file, options) {
 setupSegmentedControls();
 setupColorPicker();
 setupTrackOpacity();
+setupTrackWidth();
 setupSidebarToggle();
 setupConfirmModal();
 initMap();
@@ -2680,6 +2857,9 @@ function updateFileMeta(file, pointsLonLat) {
   fileMetaEl.appendChild(nameRow);
   fileMetaEl.appendChild(lengthRow);
   fileMetaEl.classList.remove("hidden");
+  if (trackControlsEl) {
+    trackControlsEl.classList.remove("hidden");
+  }
 }
 
 function getOverlapValue() {
@@ -2799,6 +2979,7 @@ async function handleFileSelection(file) {
     };
     updateFileMeta(file, points);
     updateTrackLayer(points);
+    setTrackControlsVisible(true);
     setProgress(2, [1]);
     setStatus("GPX indlæst. Layout beregnes...");
     updateRenderButtonState();
@@ -2809,9 +2990,13 @@ async function handleFileSelection(file) {
     const message = error instanceof Error ? error.message : String(error);
     setStatus(`Fejl: ${message}`);
     fileMetaEl.classList.add("hidden");
+    if (trackControlsEl) {
+      trackControlsEl.classList.add("hidden");
+    }
     transformerState = null;
     projectionState = null;
     clearTrackLayer();
+    setTrackControlsVisible(false);
     resetLayoutState();
   }
 }
@@ -2948,6 +3133,13 @@ if (hikeRoutesToggleEl) {
   });
 }
 
+if (weakIceToggleEl) {
+  weakIceToggleEl.addEventListener("change", () => {
+    updateWeakIceOpacityVisibility();
+    updateWeakIceOverlays();
+  });
+}
+
 heightLayerToggleEls.forEach((toggle) => {
   toggle.addEventListener("change", () => {
     updateHeightOpacityVisibility();
@@ -2967,6 +3159,24 @@ if (heightOpacityEl) {
   });
 }
 
+function updateWeakIceOpacityLabel() {
+  if (!weakIceOpacityValueEl || !weakIceOpacityEl) return;
+  const value = Number(weakIceOpacityEl.value);
+  if (!Number.isFinite(value)) return;
+  const percent = Math.round(value * 100);
+  weakIceOpacityValueEl.textContent = `${percent}%`;
+}
+
+if (weakIceOpacityEl) {
+  updateWeakIceOpacityLabel();
+  weakIceOpacityEl.addEventListener("input", () => {
+    updateWeakIceOpacityLabel();
+    weakIceOverlayLayers.forEach((layer) => {
+      layer.setOpacity(effectiveWeakIceOpacity());
+    });
+  });
+}
+
 if (heightMaskGreenAEl) {
   heightMaskGreenAEl.addEventListener("change", () => {
     refreshHeightOverlays();
@@ -2979,6 +3189,7 @@ if (heightMaskGreenBEl) {
   });
 }
 
+updateWeakIceOpacityVisibility();
 updateHeightOpacityVisibility();
 updateHeightMaskVisibility();
 
@@ -3001,8 +3212,8 @@ controlsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   clearDownload();
 
-  if (!selectedFile) {
-    setStatus("Vælg en GPX-fil.");
+  if (!selectedFile && !projectionState?.transformer) {
+    setStatus("Kortet er ikke klar endnu.");
     return;
   }
 
@@ -3011,7 +3222,7 @@ controlsForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  if (!isLayoutReady || !layoutPages.length) {
+  if (!layoutPages.length) {
     setStatus("Layout er ikke klar endnu.");
     return;
   }
@@ -3030,7 +3241,10 @@ controlsForm.addEventListener("submit", async (event) => {
     : DEFAULT_JPEG_QUALITY;
   const heightLayers = getSelectedHeightLayers();
   const heightOpacity = effectiveHeightOpacity();
+  const weakIceLayers = getSelectedWeakIceLayers();
+  const weakIceOpacity = effectiveWeakIceOpacity();
   const trackOpacity = selections.trackOpacity;
+  const trackWidth = selections.trackWidth;
   fetch("/.netlify/functions/log_click", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
@@ -3049,7 +3263,10 @@ controlsForm.addEventListener("submit", async (event) => {
     showHikeRoutes,
     heightLayers,
     heightOpacity,
+    weakIceLayers,
+    weakIceOpacity,
     trackOpacity,
+    trackWidth,
     trackColor: selections.trackColor,
     pageImageFormat,
     pageImageQuality,
@@ -3067,7 +3284,10 @@ controlsForm.addEventListener("submit", async (event) => {
     showHikeRoutes,
     heightLayers,
     heightOpacity,
+    weakIceLayers,
+    weakIceOpacity,
     trackOpacity,
+    trackWidth,
     trackColor: selections.trackColor,
     pageImageFormat,
     pageImageQuality,
@@ -3091,11 +3311,14 @@ controlsForm.addEventListener("submit", async (event) => {
       showHikeRoutes,
       heightLayers,
       heightOpacity,
+      weakIceLayers,
+      weakIceOpacity,
       trackOpacity,
+      trackWidth,
       trackColor: selections.trackColor,
       pageImageFormat,
       pageImageQuality,
-      pointsLonLat: cachedPoints,
+      pointsLonLat: cachedPoints ?? [],
       projection: projectionState,
       pages: layoutPages,
     });
@@ -3116,7 +3339,9 @@ controlsForm.addEventListener("submit", async (event) => {
     setRenderProgress(0, 1, false);
   } finally {
     renderBtn.disabled = false;
-    spinnerEl.classList.add("hidden");
+    if (spinnerEl) {
+      spinnerEl.classList.add("hidden");
+    }
   }
 });
 
@@ -3140,3 +3365,4 @@ window.addEventListener("keydown", (event) => {
 
 setProgress(1, []);
 updateRenderButtonState();
+setTrackControlsVisible(false);
