@@ -6,6 +6,12 @@ const L = window.L;
 
 const WMS_BASE_URL = "https://wms.geonorge.no/skwms1/wms.topo";
 const WMS_GRID_URL = "https://wms.geonorge.no/skwms1/wms.rutenett";
+const WMS_ROUTE_URL = "https://wms.geonorge.no/skwms1/wms.friluftsruter2";
+const WMS_HEIGHT_URL = "https://wms.geonorge.no/skwms1/wms.hoyde-dtm";
+const WMS_ROUTE_LAYERS = {
+  ski: "Skiloype",
+  hike: "Fotrute",
+};
 
 // Kartverket cache (WMTS/XYZ-style REST endpoints)
 // Capabilities are documented here: https://cache.kartverket.no/
@@ -26,11 +32,28 @@ const MAP_ATTRIBUTION = "&copy; Kartverket";
 const WMTS_MAX_TILES_PER_PAGE = 120;
 const WMTS_TILE_SIZE = 256;
 const USE_WMTS_FOR_BASEMAP = true;
+const ROUTE_OVERLAY_OPACITY = 1;
+const DEFAULT_HEIGHT_OVERLAY_OPACITY = 0.2;
+const HEIGHT_OVERLAY_MIN_ZOOM = 10;
+const HEIGHT_OVERLAY_MASK_COLORS = [
+  { r: 0x92, g: 0xd0, b: 0x60 },
+  { r: 0xd9, g: 0xf0, b: 0x8b },
+];
+const HEIGHT_OVERLAY_MASK_TOLERANCE = 18;
+const HEIGHT_TILE_CACHE_LIMIT = 200;
 const DEFAULT_DPI = 300;
+const DEFAULT_JPEG_QUALITY = 0.9;
+const HEIGHT_OVERLAY_SCALE_BY_MAP_SCALE = {
+  25000: 0.55,
+  50000: 0.45,
+  100000: 0.35,
+};
 const DEFAULT_OVERLAP = 0.05;
 const DEFAULT_MARGIN = 0.15;
+const DEFAULT_TRACK_OPACITY = 0.8;
 const TRACK_STROKE_PX = 4;
-const PAGE_RENDER_CONCURRENCY = 2;
+const PAGE_RENDER_CONCURRENCY = 4;
+const LARGE_FILE_THRESHOLD = 1024 * 1024;
 const PAGE_STYLE = {
   color: "#1e1b16",
   weight: 2,
@@ -72,23 +95,52 @@ const confirmModalEl = document.getElementById("confirmModal");
 const confirmTextEl = document.getElementById("confirmText");
 const confirmAcceptBtn = document.getElementById("confirmAcceptBtn");
 const confirmCancelBtn = document.getElementById("confirmCancelBtn");
+const skiRoutesToggleEl = document.getElementById("skiRoutesToggle");
+const hikeRoutesToggleEl = document.getElementById("hikeRoutesToggle");
+const heightLegendEl = document.getElementById("heightLegend");
+const heightLegendImgEl = document.getElementById("heightLegendImg");
+const heightLayerToggleEls = Array.from(
+  document.querySelectorAll(".height-layer-toggle")
+);
+const heightOpacityGroupEl = document.getElementById("heightOpacityGroup");
+const heightOpacityEl = document.getElementById("heightOpacity");
+const heightOpacityValueEl = document.getElementById("heightOpacityValue");
+const heightMaskGroupEl = document.getElementById("heightMaskGroup");
+const heightMaskGreenAEl = document.getElementById("heightMaskGreenA");
+const heightMaskGreenBEl = document.getElementById("heightMaskGreenB");
+const overlapValueEl = document.getElementById("overlapValue");
+const marginValueEl = document.getElementById("marginValue");
+const trackOpacityEl = document.getElementById("trackOpacity");
+const trackOpacityValueEl = document.getElementById("trackOpacityValue");
+const pdfJpegToggleEl = document.getElementById("pdfJpegToggle");
+const jpegQualityGroupEl = document.getElementById("jpegQualityGroup");
+const jpegQualityEl = document.getElementById("jpegQuality");
+const jpegQualityValueEl = document.getElementById("jpegQualityValue");
 
 const selections = {
   paper: "A4",
   scale: 50000,
   orientation: "auto",
   trackColor: "#ff3b30",
+  trackOpacity: 0.8,
 };
 
 let selectedFile = null;
 let cachedPoints = null;
 let transformerState = null;
+let projectionState = null;
 let mapInstance = null;
 let trackLayer = null;
 let pageLayerGroup = null;
 let pageLayers = [];
 let pageLabelLayers = [];
 let pageColors = [];
+let skiRoutesLayer = null;
+let hikeRoutesLayer = null;
+let heightOverlayLayers = new Map();
+let heightOverlayBounds = null;
+const heightTileBitmapCache = new Map();
+const heightTileMaskedCache = new Map();
 let selectionMarker = null;
 let layoutPages = [];
 let selectedPageIndex = null;
@@ -99,6 +151,9 @@ let dragState = null;
 let dragListenersActive = false;
 let nextPageId = 1;
 let confirmResolver = null;
+let gpxWorker = null;
+let gpxWorkerRequestId = 0;
+const gpxWorkerPending = new Map();
 
 function setStatus(message, isLoading = false) {
   statusTextEl.textContent = message;
@@ -143,6 +198,8 @@ function resetLayoutState() {
   hasManualEdits = false;
   selectedPageIndex = null;
   pageColors = [];
+  heightOverlayBounds = null;
+  refreshHeightOverlays();
   updateSelectionBar();
   updateRenderButtonState();
 }
@@ -245,6 +302,21 @@ function setupColorPicker() {
         trackLayer.setStyle({ color: selections.trackColor });
       }
     });
+  });
+}
+
+function setupTrackOpacity() {
+  if (!trackOpacityEl) return;
+  selections.trackOpacity = Number(trackOpacityEl.value);
+  updateTrackOpacityLabel();
+  trackOpacityEl.addEventListener("input", () => {
+    const value = Number(trackOpacityEl.value);
+    if (!Number.isFinite(value)) return;
+    selections.trackOpacity = value;
+    updateTrackOpacityLabel();
+    if (trackLayer) {
+      trackLayer.setStyle({ opacity: effectiveTrackOpacity() });
+    }
   });
 }
 
@@ -352,6 +424,12 @@ function parseGPX(xmlText) {
   return points;
 }
 
+function buildProjection(pointsLonLat) {
+  const { transformer, epsg } = transformerForPoints(pointsLonLat);
+  const { xs, ys } = projectPoints(pointsLonLat, transformer);
+  return { pointsLonLat, transformer, epsg, xs, ys };
+}
+
 function formatDistance(meters) {
   if (!Number.isFinite(meters)) return "n/a";
   if (meters < 1000) {
@@ -361,8 +439,18 @@ function formatDistance(meters) {
 }
 
 function computeTrackLengthMeters(pointsLonLat) {
+  const projection = projectionState;
+  const xs = projection?.xs;
+  const ys = projection?.ys;
+  if (xs && ys && xs.length === ys.length) {
+    return trackLengthFromProjected(xs, ys);
+  }
   const { transformer } = transformerForPoints(pointsLonLat);
-  const { xs, ys } = projectPoints(pointsLonLat, transformer);
+  const projected = projectPoints(pointsLonLat, transformer);
+  return trackLengthFromProjected(projected.xs, projected.ys);
+}
+
+function trackLengthFromProjected(xs, ys) {
   let total = 0;
   for (let i = 1; i < xs.length; i += 1) {
     const dx = xs[i] - xs[i - 1];
@@ -388,7 +476,54 @@ function transformerForPoints(pointsLonLat) {
   const zone = epsg - 25800;
   const utmDef = `+proj=utm +zone=${zone} +ellps=GRS80 +units=m +no_defs`;
   const transformer = proj4("EPSG:4326", utmDef);
-  return { transformer, epsg };
+  return { transformer, epsg, utmDef };
+}
+
+function ensureGpxWorker() {
+  if (gpxWorker) return gpxWorker;
+  if (!window.Worker) return null;
+  const worker = new Worker(new URL("./worker.js", import.meta.url), {
+    type: "module",
+  });
+  worker.addEventListener("message", (event) => {
+    const data = event.data || {};
+    const { id, ok, payload, error } = data;
+    const pending = gpxWorkerPending.get(id);
+    if (!pending) return;
+    gpxWorkerPending.delete(id);
+    if (!ok) {
+      pending.reject(new Error(error || "Worker-fejl ved GPX-parsing."));
+      return;
+    }
+    try {
+      const { pointsLonLat, xs, ys, epsg, utmDef } = payload;
+      const transformer = proj4("EPSG:4326", utmDef);
+      pending.resolve({ pointsLonLat, xs, ys, epsg, transformer });
+    } catch (err) {
+      pending.reject(err);
+    }
+  });
+  worker.addEventListener("error", () => {
+    const error = new Error("Web worker fejlede.");
+    gpxWorkerPending.forEach(({ reject }) => reject(error));
+    gpxWorkerPending.clear();
+  });
+  gpxWorker = worker;
+  return worker;
+}
+
+async function parseLargeGpxWithWorker(file) {
+  const worker = ensureGpxWorker();
+  if (!worker) {
+    throw new Error("Web worker understøttes ikke i denne browser.");
+  }
+  const xmlText = await file.text();
+  const id = (gpxWorkerRequestId += 1);
+  const promise = new Promise((resolve, reject) => {
+    gpxWorkerPending.set(id, { resolve, reject });
+  });
+  worker.postMessage({ id, xmlText });
+  return promise;
 }
 
 function projectPoints(pointsLonLat, transformer) {
@@ -433,6 +568,330 @@ function computePageColors(count) {
   return Array.from({ length: count }, () => PAGE_FILL_COLOR);
 }
 
+function effectiveTrackOpacity() {
+  return selections.trackOpacity;
+}
+
+function updateTrackOpacityLabel() {
+  if (!trackOpacityValueEl || !trackOpacityEl) return;
+  const value = Number(trackOpacityEl.value);
+  const percent = Math.round(value * 100);
+  trackOpacityValueEl.textContent = `${percent}%`;
+}
+
+function updateHeightOpacityLabel() {
+  if (!heightOpacityValueEl || !heightOpacityEl) return;
+  const value = Number(heightOpacityEl.value);
+  const percent = Math.round(value * 100);
+  heightOpacityValueEl.textContent = `${percent}%`;
+}
+
+function getActiveHeightMaskColors() {
+  const active = [];
+  if (heightMaskGreenAEl?.checked) active.push(HEIGHT_OVERLAY_MASK_COLORS[0]);
+  if (heightMaskGreenBEl?.checked) active.push(HEIGHT_OVERLAY_MASK_COLORS[1]);
+  return active;
+}
+
+function getHeightMaskKey() {
+  return `${heightMaskGreenAEl?.checked ? "1" : "0"}${heightMaskGreenBEl?.checked ? "1" : "0"}`;
+}
+
+function pruneCache(cache, limit) {
+  while (cache.size > limit) {
+    const firstKey = cache.keys().next().value;
+    if (firstKey === undefined) break;
+    cache.delete(firstKey);
+  }
+}
+
+function matchesMaskedHeightColorFromList(r, g, b, colors) {
+  return colors.some((color) => (
+    Math.abs(r - color.r) <= HEIGHT_OVERLAY_MASK_TOLERANCE &&
+    Math.abs(g - color.g) <= HEIGHT_OVERLAY_MASK_TOLERANCE &&
+    Math.abs(b - color.b) <= HEIGHT_OVERLAY_MASK_TOLERANCE
+  ));
+}
+
+function applyHeightMaskToContext(ctx, width, height, colors) {
+  if (!colors.length) return;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] === 0) continue;
+    if (matchesMaskedHeightColorFromList(data[i], data[i + 1], data[i + 2], colors)) {
+      data[i + 3] = 0;
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function updateJpegQualityLabel() {
+  if (!jpegQualityValueEl || !jpegQualityEl) return;
+  const value = Number(jpegQualityEl.value);
+  if (!Number.isFinite(value)) return;
+  const percent = Math.round(value * 100);
+  jpegQualityValueEl.textContent = `${percent}%`;
+}
+
+function updateJpegQualityVisibility() {
+  if (!jpegQualityGroupEl || !pdfJpegToggleEl) return;
+  jpegQualityGroupEl.classList.toggle("hidden", !pdfJpegToggleEl.checked);
+}
+
+function updateOverlapLabel() {
+  if (!overlapValueEl) return;
+  const value = Number(document.getElementById("overlap")?.value);
+  if (!Number.isFinite(value)) return;
+  overlapValueEl.textContent = `${Math.round(value)}%`;
+}
+
+function updateMarginLabel() {
+  if (!marginValueEl) return;
+  const value = Number(document.getElementById("margin")?.value);
+  if (!Number.isFinite(value)) return;
+  marginValueEl.textContent = `${Math.round(value)}%`;
+}
+
+function ensureRouteOverlayPane() {
+  if (!mapInstance) return;
+  const existing = mapInstance.getPane("routeOverlayPane");
+  if (existing) return;
+  const pane = mapInstance.createPane("routeOverlayPane");
+  pane.style.zIndex = "350";
+  pane.style.pointerEvents = "none";
+}
+
+function ensureHeightOverlayPane() {
+  if (!mapInstance) return;
+  const existing = mapInstance.getPane("heightOverlayPane");
+  if (existing) return;
+  const pane = mapInstance.createPane("heightOverlayPane");
+  pane.style.zIndex = "320";
+  pane.style.pointerEvents = "none";
+}
+
+function createRouteLayer(layerName) {
+  return L.tileLayer.wms(WMS_ROUTE_URL, {
+    layers: layerName,
+    format: "image/png",
+    transparent: true,
+    opacity: ROUTE_OVERLAY_OPACITY,
+    pane: "routeOverlayPane",
+  });
+}
+
+function createHeightLayer(layerName) {
+  const bounds = heightOverlayBounds ?? null;
+  const HeightLayer = L.GridLayer.extend({
+    createTile(coords, done) {
+      const tile = document.createElement("canvas");
+      const size = this.getTileSize();
+      tile.width = size.x;
+      tile.height = size.y;
+      const ctx = tile.getContext("2d", { willReadFrequently: true });
+
+      if (!mapInstance || !ctx) {
+        done(null, tile);
+        return tile;
+      }
+
+      const nwPoint = coords.scaleBy(size);
+      const sePoint = nwPoint.add(size);
+      const nw = mapInstance.unproject(nwPoint, coords.z);
+      const se = mapInstance.unproject(sePoint, coords.z);
+      const tileBounds = L.latLngBounds(nw, se);
+      if (bounds && !bounds.intersects(tileBounds)) {
+        done(null, tile);
+        return tile;
+      }
+
+      const crs = mapInstance.options.crs;
+      const projectedNw = crs.project(nw);
+      const projectedSe = crs.project(se);
+      const bbox = [
+        projectedNw.x,
+        projectedSe.y,
+        projectedSe.x,
+        projectedNw.y,
+      ];
+
+      const params = new URLSearchParams({
+        service: "WMS",
+        request: "GetMap",
+        version: "1.3.0",
+        layers: layerName,
+        styles: "",
+        width: String(size.x),
+        height: String(size.y),
+        format: "image/png",
+        transparent: "true",
+        crs: "EPSG:3857",
+        bbox: bbox.join(","),
+      });
+
+      const requestUrl = `${WMS_HEIGHT_URL}?${params.toString()}`;
+      const activeMaskColors = getActiveHeightMaskColors();
+      const maskKey = getHeightMaskKey();
+      const maskedCacheKey = `${requestUrl}|${maskKey}`;
+      const cachedMasked = heightTileMaskedCache.get(maskedCacheKey);
+      if (cachedMasked) {
+        ctx.drawImage(cachedMasked, 0, 0, size.x, size.y);
+        done(null, tile);
+        return tile;
+      }
+
+      const cachedBitmap = heightTileBitmapCache.get(requestUrl);
+      const drawAndMask = (bitmap) => {
+        ctx.drawImage(bitmap, 0, 0, size.x, size.y);
+        applyHeightMaskToContext(ctx, size.x, size.y, activeMaskColors);
+        const maskedCanvas = document.createElement("canvas");
+        maskedCanvas.width = size.x;
+        maskedCanvas.height = size.y;
+        const maskedCtx = maskedCanvas.getContext("2d");
+        if (maskedCtx) {
+          maskedCtx.drawImage(tile, 0, 0);
+          heightTileMaskedCache.set(maskedCacheKey, maskedCanvas);
+          pruneCache(heightTileMaskedCache, HEIGHT_TILE_CACHE_LIMIT);
+        }
+        done(null, tile);
+      };
+
+      if (cachedBitmap) {
+        drawAndMask(cachedBitmap);
+        return tile;
+      }
+
+      fetch(requestUrl, { mode: "cors" })
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error(`WMS-forespørgsel fejlede (${response.status}).`);
+          }
+          return response.blob();
+        })
+        .then((blob) => createImageBitmap(blob))
+        .then((bitmap) => {
+          heightTileBitmapCache.set(requestUrl, bitmap);
+          pruneCache(heightTileBitmapCache, HEIGHT_TILE_CACHE_LIMIT);
+          drawAndMask(bitmap);
+        })
+        .catch((error) => {
+          done(error, tile);
+        });
+
+      return tile;
+    },
+  });
+
+  return new HeightLayer({
+    pane: "heightOverlayPane",
+    opacity: effectiveHeightOpacity(),
+    minZoom: HEIGHT_OVERLAY_MIN_ZOOM,
+    updateWhenIdle: true,
+    updateWhenZooming: false,
+    keepBuffer: 0,
+  });
+}
+
+function updateRouteOverlays() {
+  if (!mapInstance || !L) return;
+  ensureRouteOverlayPane();
+  const showSki = Boolean(skiRoutesToggleEl?.checked);
+  const showHike = Boolean(hikeRoutesToggleEl?.checked);
+
+  if (showSki && !skiRoutesLayer) {
+    skiRoutesLayer = createRouteLayer(WMS_ROUTE_LAYERS.ski);
+    skiRoutesLayer.addTo(mapInstance);
+  } else if (!showSki && skiRoutesLayer) {
+    mapInstance.removeLayer(skiRoutesLayer);
+    skiRoutesLayer = null;
+  }
+
+  if (showHike && !hikeRoutesLayer) {
+    hikeRoutesLayer = createRouteLayer(WMS_ROUTE_LAYERS.hike);
+    hikeRoutesLayer.addTo(mapInstance);
+  } else if (!showHike && hikeRoutesLayer) {
+    mapInstance.removeLayer(hikeRoutesLayer);
+    hikeRoutesLayer = null;
+  }
+
+  if (trackLayer) {
+    trackLayer.setStyle({ opacity: effectiveTrackOpacity() });
+  }
+}
+
+function effectiveHeightOpacity() {
+  if (!heightOpacityEl) return DEFAULT_HEIGHT_OVERLAY_OPACITY;
+  const value = Number(heightOpacityEl.value);
+  return Number.isFinite(value) ? value : DEFAULT_HEIGHT_OVERLAY_OPACITY;
+}
+
+function updateHeightOpacityVisibility() {
+  if (!heightOpacityGroupEl) return;
+  const anyOn = heightLayerToggleEls.some((toggle) => toggle.checked);
+  heightOpacityGroupEl.classList.toggle("hidden", !anyOn);
+}
+
+function updateHeightMaskVisibility() {
+  if (!heightMaskGroupEl) return;
+  const anyOn = heightLayerToggleEls.some((toggle) => toggle.checked);
+  heightMaskGroupEl.classList.toggle("hidden", !anyOn);
+}
+
+function updateHeightLegendVisibility() {
+  if (!heightLegendEl || !heightLegendImgEl) return;
+  const anyOn = heightLayerToggleEls.some((toggle) => toggle.checked);
+  heightLegendEl.classList.toggle("hidden", !anyOn);
+}
+
+function ensureHeightLegendSrc() {
+  if (!heightLegendImgEl || heightLegendImgEl.src) return;
+  const params = new URLSearchParams({
+    request: "GetLegendGraphic",
+    version: "1.3.0",
+    format: "image/png",
+    layer: "DTM:helning_grader",
+  });
+  heightLegendImgEl.src = `${WMS_HEIGHT_URL}?${params.toString()}`;
+}
+
+function updateHeightOverlays() {
+  if (!mapInstance || !L) return;
+  ensureHeightOverlayPane();
+  updateHeightLegendVisibility();
+  ensureHeightLegendSrc();
+  heightLayerToggleEls.forEach((toggle) => {
+    const layerName = toggle.dataset.heightLayer;
+    if (!layerName) return;
+    const shouldShow = Boolean(toggle.checked);
+    const existing = heightOverlayLayers.get(layerName);
+    if (shouldShow && !existing) {
+      const layer = createHeightLayer(layerName);
+      heightOverlayLayers.set(layerName, layer);
+      layer.addTo(mapInstance);
+    } else if (!shouldShow && existing) {
+      mapInstance.removeLayer(existing);
+      heightOverlayLayers.delete(layerName);
+    }
+  });
+}
+
+function refreshHeightOverlays() {
+  if (!mapInstance) return;
+  heightOverlayLayers.forEach((layer) => {
+    mapInstance.removeLayer(layer);
+  });
+  heightOverlayLayers = new Map();
+  updateHeightOverlays();
+}
+
+function getSelectedHeightLayers() {
+  return heightLayerToggleEls
+    .filter((toggle) => toggle.checked)
+    .map((toggle) => toggle.dataset.heightLayer)
+    .filter(Boolean);
+}
+
 function initMap() {
   if (mapInstance || !mapEl) return;
   if (!L) {
@@ -455,6 +914,8 @@ function initMap() {
   mapInstance.setView([64.5, 11.0], 5);
 
   pageLayerGroup = L.layerGroup().addTo(mapInstance);
+  updateRouteOverlays();
+  updateHeightOverlays();
 
   mapInstance.on("click", (event) => {
     const target = event.originalEvent?.target;
@@ -463,7 +924,7 @@ function initMap() {
     }
     selectPage(null);
   });
-  mapInstance.on("zoomend move", () => {
+  mapInstance.on("zoomend moveend", () => {
     updateSelectionBar();
   });
 }
@@ -477,8 +938,8 @@ function updateTrackLayer(pointsLonLat) {
   const latLngs = pointsLonLat.map(([lon, lat]) => [lat, lon]);
   trackLayer = L.polyline(latLngs, {
     color: selections.trackColor,
-    weight: 4,
-    opacity: 0.9,
+    weight: TRACK_STROKE_PX,
+    opacity: effectiveTrackOpacity(),
   }).addTo(mapInstance);
   const bounds = L.latLngBounds(latLngs);
   mapInstance.fitBounds(bounds.pad(0.1));
@@ -903,6 +1364,10 @@ function clampMargin(margin) {
   return Math.max(0.0, Math.min(margin, 0.45));
 }
 
+function clampPdfQuality(quality) {
+  return Math.max(0.1, Math.min(quality, 1));
+}
+
 function cumulativeDistances(xs, ys) {
   const distances = Array.from({ length: xs.length }, () => 0);
   for (let i = 1; i < xs.length; i += 1) {
@@ -976,7 +1441,218 @@ function candidateCenterIndices(startIndex, endIndex) {
   return indices;
 }
 
+function unitVector(dx, dy) {
+  const mag = Math.hypot(dx, dy);
+  if (!mag) return { x: 1, y: 0 };
+  return { x: dx / mag, y: dy / mag };
+}
+
+function densifyTrack(xs, ys, maxStepMeters) {
+  if (xs.length < 2) return { xs: xs.slice(), ys: ys.slice() };
+  const denseX = [];
+  const denseY = [];
+  for (let i = 0; i < xs.length - 1; i += 1) {
+    const x1 = xs[i];
+    const y1 = ys[i];
+    const x2 = xs[i + 1];
+    const y2 = ys[i + 1];
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const dist = Math.hypot(dx, dy);
+    const steps = Math.max(1, Math.ceil(dist / maxStepMeters));
+    for (let s = 0; s < steps; s += 1) {
+      const t = s / steps;
+      denseX.push(x1 + dx * t);
+      denseY.push(y1 + dy * t);
+    }
+  }
+  denseX.push(xs[xs.length - 1]);
+  denseY.push(ys[ys.length - 1]);
+  return { xs: denseX, ys: denseY };
+}
+
 function computeAdaptivePages(xs, ys, options) {
+  if (options.disableDp) {
+    return computeAdaptivePagesGreedy(xs, ys, options);
+  }
+  const densifyStep = 80;
+  const densified = densifyTrack(xs, ys, densifyStep);
+  const denseXs = densified.xs;
+  const denseYs = densified.ys;
+  const overlap = clampOverlap(options.overlap);
+  const margin = clampMargin(options.margin ?? DEFAULT_MARGIN);
+  const innerFraction = Math.max(overlap, margin);
+  const distances = cumulativeDistances(denseXs, denseYs);
+  const maxIndex = denseXs.length - 1;
+  const metricsByOrientation = {
+    portrait: pageGroundSpan(options.scale, options.dpi, options.paper, "portrait"),
+    landscape: pageGroundSpan(options.scale, options.dpi, options.paper, "landscape"),
+  };
+  const windowFactor = 0.9;
+  const minWindowPoints = 8;
+  const slideRangeFactor = 0.2;
+  const slideSteps = [-1, -0.66, -0.33, 0, 0.33, 0.66, 1];
+
+  const buildCandidates = (startIdx, orientation) => {
+    const metrics = metricsByOrientation[orientation];
+    const windowMeters = Math.max(metrics.wM, metrics.hM) * windowFactor;
+    const centerEnd = windowEndIndex(
+      distances,
+      startIdx,
+      windowMeters,
+      minWindowPoints
+    );
+    const centerIndices = candidateCenterIndices(startIdx, centerEnd);
+    const dir = unitVector(
+      denseXs[centerEnd] - denseXs[startIdx],
+      denseYs[centerEnd] - denseYs[startIdx]
+    );
+    const slideRange = Math.max(metrics.wM, metrics.hM) * slideRangeFactor;
+    const marginX = (metrics.wM * innerFraction) / 2;
+    const marginY = (metrics.hM * innerFraction) / 2;
+    const candidates = [];
+
+    centerIndices.forEach((centerIdx) => {
+      const baseCenter = meanPoints(denseXs, denseYs, startIdx, centerIdx);
+      slideSteps.forEach((step) => {
+        const center = {
+          x: baseCenter.x + dir.x * slideRange * step,
+          y: baseCenter.y + dir.y * slideRange * step,
+        };
+        const bbox = bboxFromCenter(center.x, center.y, metrics.wM, metrics.hM);
+        const inner = shrinkBBox(bbox, marginX, marginY);
+        if (!pointInBBox(denseXs[startIdx], denseYs[startIdx], inner)) return;
+        const endIndex = lastIndexInside(inner, denseXs, denseYs, startIdx);
+        const coveredDist = distances[endIndex] - distances[startIdx];
+        const segmentCenter = meanPoints(denseXs, denseYs, startIdx, endIndex);
+        const offsetX = (segmentCenter.x - center.x) / (metrics.wM / 2);
+        const offsetY = (segmentCenter.y - center.y) / (metrics.hM / 2);
+        const centerPenalty = Math.hypot(offsetX, offsetY);
+        candidates.push({
+          orientation,
+          bbox,
+          wPx: metrics.wPx,
+          hPx: metrics.hPx,
+          wM: metrics.wM,
+          hM: metrics.hM,
+          endIndex,
+          coveredDist,
+          centerPenalty,
+          startIndex: startIdx,
+          isTerminal: endIndex >= maxIndex,
+        });
+      });
+    });
+
+    if (!candidates.length) {
+      const fallbackCenter = { x: xs[startIdx], y: ys[startIdx] };
+      const bbox = bboxFromCenter(
+        fallbackCenter.x,
+        fallbackCenter.y,
+        metrics.wM,
+        metrics.hM
+      );
+      const inner = shrinkBBox(bbox, marginX, marginY);
+      const endIndex = lastIndexInside(inner, denseXs, denseYs, startIdx);
+      candidates.push({
+        orientation,
+        bbox,
+        wPx: metrics.wPx,
+        hPx: metrics.hPx,
+        wM: metrics.wM,
+        hM: metrics.hM,
+        endIndex,
+        coveredDist: distances[endIndex] - distances[startIdx],
+        centerPenalty: 0,
+        startIndex: startIdx,
+        isTerminal: endIndex >= maxIndex,
+      });
+    }
+
+    return candidates;
+  };
+
+  const pickBest = (candidates) => {
+    let best = candidates[0];
+    for (let i = 1; i < candidates.length; i += 1) {
+      const candidate = candidates[i];
+      if (
+        candidate.totalPages < best.totalPages ||
+        (candidate.totalPages === best.totalPages &&
+          (candidate.totalCoveredDist > best.totalCoveredDist ||
+            (candidate.totalCoveredDist === best.totalCoveredDist &&
+              candidate.totalCenterPenalty < best.totalCenterPenalty)))
+      ) {
+        best = candidate;
+      }
+    }
+    return best;
+  };
+
+  const memo = new Map();
+
+  const bestFrom = (startIdx) => {
+    if (startIdx > maxIndex) {
+      return { totalPages: 0, totalCoveredDist: 0, totalCenterPenalty: 0, seq: [] };
+    }
+    if (memo.has(startIdx)) return memo.get(startIdx);
+    const candidates = [
+      ...buildCandidates(startIdx, "portrait"),
+      ...buildCandidates(startIdx, "landscape"),
+    ];
+
+    const scored = candidates.map((candidate) => {
+      let remainder = { totalPages: 0, totalCoveredDist: 0, totalCenterPenalty: 0, seq: [] };
+      if (!candidate.isTerminal) {
+        const nextIndex = Math.min(
+          Math.max(candidate.endIndex, startIdx + 1),
+          maxIndex
+        );
+        remainder = bestFrom(nextIndex);
+      }
+      return {
+        ...candidate,
+        totalPages: 1 + remainder.totalPages,
+        totalCoveredDist: candidate.coveredDist + remainder.totalCoveredDist,
+        totalCenterPenalty: candidate.centerPenalty + remainder.totalCenterPenalty,
+        seq: [candidate, ...remainder.seq],
+      };
+    });
+
+    const best = pickBest(scored);
+    memo.set(startIdx, best);
+    return best;
+  };
+
+  const bestPath = bestFrom(0);
+  const pages = bestPath.seq.map((entry) => ({
+    bbox: entry.bbox,
+    orientation: entry.orientation,
+    wPx: entry.wPx,
+    hPx: entry.hPx,
+    wM: entry.wM,
+    hM: entry.hM,
+  }));
+
+  for (let i = 0; i < denseXs.length; i += 1) {
+    const x = denseXs[i];
+    const y = denseYs[i];
+    let covered = false;
+    for (let p = 0; p < pages.length; p += 1) {
+      if (pointInBBox(x, y, pages[p].bbox)) {
+        covered = true;
+        break;
+      }
+    }
+    if (!covered) {
+      return computeAdaptivePages(xs, ys, { ...options, disableDp: true });
+    }
+  }
+
+  return pages;
+}
+
+function computeAdaptivePagesGreedy(xs, ys, options) {
   const overlap = clampOverlap(options.overlap);
   const margin = clampMargin(options.margin ?? DEFAULT_MARGIN);
   const innerFraction = Math.max(overlap, margin);
@@ -988,38 +1664,42 @@ function computeAdaptivePages(xs, ys, options) {
   };
   const windowFactor = 0.9;
   const minWindowPoints = 8;
+  const slideRangeFactor = 0.2;
+  const slideSteps = [-1, -0.66, -0.33, 0, 0.33, 0.66, 1];
 
-  const pages = [];
-  let startIndex = 0;
-  while (startIndex <= maxIndex) {
-    const candidates = ["portrait", "landscape"].map((orientation) => {
-      const metrics = metricsByOrientation[orientation];
-      const windowMeters = Math.max(metrics.wM, metrics.hM) * windowFactor;
-      const centerEnd = windowEndIndex(
-        distances,
-        startIndex,
-        windowMeters,
-        minWindowPoints
-      );
-      const centerIndices = candidateCenterIndices(startIndex, centerEnd);
-      let bestCandidate = null;
+  const buildCandidates = (startIdx, orientation) => {
+    const metrics = metricsByOrientation[orientation];
+    const windowMeters = Math.max(metrics.wM, metrics.hM) * windowFactor;
+    const centerEnd = windowEndIndex(
+      distances,
+      startIdx,
+      windowMeters,
+      minWindowPoints
+    );
+    const centerIndices = candidateCenterIndices(startIdx, centerEnd);
+    const dir = unitVector(xs[centerEnd] - xs[startIdx], ys[centerEnd] - ys[startIdx]);
+    const slideRange = Math.max(metrics.wM, metrics.hM) * slideRangeFactor;
+    const marginX = (metrics.wM * innerFraction) / 2;
+    const marginY = (metrics.hM * innerFraction) / 2;
+    const candidates = [];
 
-      centerIndices.forEach((centerIdx) => {
-        const center = meanPoints(xs, ys, startIndex, centerIdx);
+    centerIndices.forEach((centerIdx) => {
+      const baseCenter = meanPoints(xs, ys, startIdx, centerIdx);
+      slideSteps.forEach((step) => {
+        const center = {
+          x: baseCenter.x + dir.x * slideRange * step,
+          y: baseCenter.y + dir.y * slideRange * step,
+        };
         const bbox = bboxFromCenter(center.x, center.y, metrics.wM, metrics.hM);
-        const marginX = (metrics.wM * innerFraction) / 2;
-        const marginY = (metrics.hM * innerFraction) / 2;
         const inner = shrinkBBox(bbox, marginX, marginY);
-        if (!pointInBBox(xs[startIndex], ys[startIndex], inner)) {
-          return;
-        }
-        const endIndex = lastIndexInside(inner, xs, ys, startIndex);
-        const coveredDist = distances[endIndex] - distances[startIndex];
-        const segmentCenter = meanPoints(xs, ys, startIndex, endIndex);
+        if (!pointInBBox(xs[startIdx], ys[startIdx], inner)) return;
+        const endIndex = lastIndexInside(inner, xs, ys, startIdx);
+        const coveredDist = distances[endIndex] - distances[startIdx];
+        const segmentCenter = meanPoints(xs, ys, startIdx, endIndex);
         const offsetX = (segmentCenter.x - center.x) / (metrics.wM / 2);
         const offsetY = (segmentCenter.y - center.y) / (metrics.hM / 2);
         const centerPenalty = Math.hypot(offsetX, offsetY);
-        const candidate = {
+        candidates.push({
           orientation,
           bbox,
           wPx: metrics.wPx,
@@ -1029,62 +1709,61 @@ function computeAdaptivePages(xs, ys, options) {
           endIndex,
           coveredDist,
           centerPenalty,
-        };
-
-        if (!bestCandidate) {
-          bestCandidate = candidate;
-          return;
-        }
-        if (
-          candidate.endIndex > bestCandidate.endIndex ||
-          (candidate.endIndex === bestCandidate.endIndex &&
-            (candidate.coveredDist > bestCandidate.coveredDist ||
-              (candidate.coveredDist === bestCandidate.coveredDist &&
-                candidate.centerPenalty < bestCandidate.centerPenalty)))
-        ) {
-          bestCandidate = candidate;
-        }
+        });
       });
-
-      if (!bestCandidate) {
-        const fallbackCenter = { x: xs[startIndex], y: ys[startIndex] };
-        const bbox = bboxFromCenter(
-          fallbackCenter.x,
-          fallbackCenter.y,
-          metrics.wM,
-          metrics.hM
-        );
-        const marginX = (metrics.wM * innerFraction) / 2;
-        const marginY = (metrics.hM * innerFraction) / 2;
-        const inner = shrinkBBox(bbox, marginX, marginY);
-        const endIndex = lastIndexInside(inner, xs, ys, startIndex);
-        bestCandidate = {
-          orientation,
-          bbox,
-          wPx: metrics.wPx,
-          hPx: metrics.hPx,
-          wM: metrics.wM,
-          hM: metrics.hM,
-          endIndex,
-          coveredDist: distances[endIndex] - distances[startIndex],
-          centerPenalty: 0,
-        };
-      }
-
-      return bestCandidate;
     });
 
-    let best = candidates[0];
-    if (
-      candidates[1].endIndex > best.endIndex ||
-      (candidates[1].endIndex === best.endIndex &&
-        (candidates[1].coveredDist > best.coveredDist ||
-          (candidates[1].coveredDist === best.coveredDist &&
-            candidates[1].centerPenalty < best.centerPenalty)))
-    ) {
-      best = candidates[1];
+    if (!candidates.length) {
+      const fallbackCenter = { x: xs[startIdx], y: ys[startIdx] };
+      const bbox = bboxFromCenter(
+        fallbackCenter.x,
+        fallbackCenter.y,
+        metrics.wM,
+        metrics.hM
+      );
+      const inner = shrinkBBox(bbox, marginX, marginY);
+      const endIndex = lastIndexInside(inner, xs, ys, startIdx);
+      candidates.push({
+        orientation,
+        bbox,
+        wPx: metrics.wPx,
+        hPx: metrics.hPx,
+        wM: metrics.wM,
+        hM: metrics.hM,
+        endIndex,
+        coveredDist: distances[endIndex] - distances[startIdx],
+        centerPenalty: 0,
+      });
     }
 
+    return candidates;
+  };
+
+  const pickBest = (candidates) => {
+    let best = candidates[0];
+    for (let i = 1; i < candidates.length; i += 1) {
+      const candidate = candidates[i];
+      if (
+        candidate.endIndex > best.endIndex ||
+        (candidate.endIndex === best.endIndex &&
+          (candidate.coveredDist > best.coveredDist ||
+            (candidate.coveredDist === best.coveredDist &&
+              candidate.centerPenalty < best.centerPenalty)))
+      ) {
+        best = candidate;
+      }
+    }
+    return best;
+  };
+
+  const pages = [];
+  let startIndex = 0;
+  while (startIndex <= maxIndex) {
+    const candidates = [
+      ...buildCandidates(startIndex, "portrait"),
+      ...buildCandidates(startIndex, "landscape"),
+    ];
+    const best = pickBest(candidates);
     pages.push({
       bbox: best.bbox,
       orientation: best.orientation,
@@ -1093,7 +1772,6 @@ function computeAdaptivePages(xs, ys, options) {
       wM: best.wM,
       hM: best.hM,
     });
-
     if (best.endIndex >= maxIndex) break;
     const nextIndex = best.endIndex > startIndex ? best.endIndex : startIndex + 1;
     startIndex = Math.min(nextIndex, maxIndex);
@@ -1500,7 +2178,7 @@ async function fetchWmtsStitchedImage(bbox, widthPx, heightPx, epsgCode, layerId
   return createImageBitmap(out);
 }
 
-function drawTrackOnCanvas(ctx, xs, ys, bbox, width, height, color) {
+function drawTrackOnCanvas(ctx, xs, ys, bbox, width, height, color, opacity) {
   const [minx, miny, maxx, maxy] = bbox;
   const toPixel = (x, y) => {
     const px = ((x - minx) / (maxx - minx)) * width;
@@ -1508,32 +2186,48 @@ function drawTrackOnCanvas(ctx, xs, ys, bbox, width, height, color) {
     return [px, py];
   };
 
+  const drawMask = new Uint8Array(xs.length);
+  for (let i = 0; i < xs.length; i += 1) {
+    if (pointInBBox(xs[i], ys[i], bbox)) {
+      drawMask[i] = 1;
+      if (i > 0) drawMask[i - 1] = 1;
+      if (i + 1 < xs.length) drawMask[i + 1] = 1;
+    }
+  }
+
+  ctx.beginPath();
+  let started = false;
+  for (let i = 0; i < xs.length; i += 1) {
+    if (!drawMask[i]) {
+      started = false;
+      continue;
+    }
+    const [px, py] = toPixel(xs[i], ys[i]);
+    if (!started) {
+      ctx.moveTo(px, py);
+      started = true;
+    } else {
+      ctx.lineTo(px, py);
+    }
+  }
+
+  ctx.save();
+  ctx.globalAlpha = Number.isFinite(opacity) ? opacity : DEFAULT_TRACK_OPACITY;
   ctx.strokeStyle = color;
   ctx.lineWidth = TRACK_STROKE_PX;
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
-  ctx.beginPath();
-
-  xs.forEach((x, idx) => {
-    const y = ys[idx];
-    const [px, py] = toPixel(x, y);
-    if (idx === 0) {
-      ctx.moveTo(px, py);
-    } else {
-      ctx.lineTo(px, py);
-    }
-  });
-
   ctx.stroke();
+  ctx.restore();
 }
 
 function formatScaleLabel(scale) {
   return String(scale).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
 }
 
-function drawPageLabel(ctx, scale, epsgCode) {
+function drawPageLabel(ctx, pageNumber, scale, epsgCode) {
   const utmZone = epsgCode - 25800;
-  const label = `1:${formatScaleLabel(scale)} | UTM ${utmZone}`;
+  const label = `${pageNumber} | 1:${formatScaleLabel(scale)} | UTM ${utmZone}`;
   const pad = 12;
   ctx.font = "18px IBM Plex Mono, monospace";
   const metrics = ctx.measureText(label);
@@ -1639,8 +2333,17 @@ async function runWithConcurrency(taskFns, limit) {
 }
 
 function computeLayoutPages(pointsLonLat, options) {
-  const { transformer, epsg } = transformerForPoints(pointsLonLat);
-  const { xs, ys } = projectPoints(pointsLonLat, transformer);
+  const projection = options.projection ?? null;
+  let transformer;
+  let epsg;
+  let xs;
+  let ys;
+  if (projection?.transformer && projection?.epsg && projection?.xs && projection?.ys) {
+    ({ transformer, epsg, xs, ys } = projection);
+  } else {
+    const fresh = buildProjection(pointsLonLat);
+    ({ transformer, epsg, xs, ys } = fresh);
+  }
   const bbox = bboxFromPoints(xs, ys);
   const overlap = clampOverlap(options.overlap);
   let pages = [];
@@ -1693,12 +2396,26 @@ function computeLayoutPages(pointsLonLat, options) {
   return { pages, xs, ys, epsg, transformer, statusLine };
 }
 
-async function renderGPXToPdf(file, options) {
-  const pointsLonLat =
-    options.pointsLonLat ?? parseGPX(await file.text());
+function heightOverlayScaleForMapScale(scale) {
+  if (HEIGHT_OVERLAY_SCALE_BY_MAP_SCALE[scale]) {
+    return HEIGHT_OVERLAY_SCALE_BY_MAP_SCALE[scale];
+  }
+  return 0.45;
+}
 
-  const { transformer, epsg } = transformerForPoints(pointsLonLat);
-  const { xs, ys } = projectPoints(pointsLonLat, transformer);
+async function renderGPXToPdf(file, options) {
+  const pointsLonLat = options.pointsLonLat ?? parseGPX(await file.text());
+  const projection = options.projection ?? null;
+  let transformer;
+  let epsg;
+  let xs;
+  let ys;
+  if (projection?.transformer && projection?.epsg && projection?.xs && projection?.ys) {
+    ({ transformer, epsg, xs, ys } = projection);
+  } else {
+    const fresh = buildProjection(pointsLonLat);
+    ({ transformer, epsg, xs, ys } = fresh);
+  }
   const modelDate = new Date();
   const declinationModel = options.showDeclination
     ? geomagnetism.model()
@@ -1754,7 +2471,85 @@ async function renderGPXToPdf(file, options) {
       epsg
     );
 
-    const [baseImg, gridImg] = await Promise.all([baseImgPromise, gridImgPromise]);
+    const overlayPromises = [];
+    const heightLayers = options.heightLayers ?? [];
+    const heightOpacity = Number.isFinite(options.heightOpacity)
+      ? options.heightOpacity
+      : DEFAULT_HEIGHT_OVERLAY_OPACITY;
+    const heightScale = Number.isFinite(options.heightOverlayScaleFactor)
+      ? options.heightOverlayScaleFactor
+      : heightOverlayScaleForMapScale(options.scale);
+    const heightWidthPx = Math.max(1, Math.round(wPx * heightScale));
+    const heightHeightPx = Math.max(1, Math.round(hPx * heightScale));
+    const heightOverlayPromises = heightLayers.map((layerName) =>
+      fetchWmsImage(
+        {
+          baseUrl: WMS_HEIGHT_URL,
+          layer: layerName,
+          styles: "",
+          format: "image/png",
+          transparent: true,
+        },
+        pageBBox,
+        heightWidthPx,
+        heightHeightPx,
+        epsg
+      )
+    );
+    if (options.showSkiRoutes) {
+      overlayPromises.push(
+        fetchWmsImage(
+          {
+            baseUrl: WMS_ROUTE_URL,
+            layer: WMS_ROUTE_LAYERS.ski,
+            styles: "",
+            format: "image/png",
+            transparent: true,
+          },
+          pageBBox,
+          wPx,
+          hPx,
+          epsg
+        )
+      );
+    }
+    if (options.showHikeRoutes) {
+      overlayPromises.push(
+        fetchWmsImage(
+          {
+            baseUrl: WMS_ROUTE_URL,
+            layer: WMS_ROUTE_LAYERS.hike,
+            styles: "",
+            format: "image/png",
+            transparent: true,
+          },
+          pageBBox,
+          wPx,
+          hPx,
+          epsg
+        )
+      );
+    }
+
+    const [baseImg, gridImg, ...overlayImgs] = await Promise.all([
+      baseImgPromise,
+      gridImgPromise,
+      ...heightOverlayPromises,
+      ...overlayPromises,
+    ]);
+    const heightOverlayImgs = overlayImgs.slice(0, heightOverlayPromises.length);
+    const routeOverlayImgs = overlayImgs.slice(heightOverlayPromises.length);
+    const activeMaskColors = getActiveHeightMaskColors();
+    const maskedHeightOverlays = heightOverlayImgs.map((img) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const maskCtx = canvas.getContext("2d", { willReadFrequently: true });
+      if (!maskCtx) return img;
+      maskCtx.drawImage(img, 0, 0);
+      applyHeightMaskToContext(maskCtx, canvas.width, canvas.height, activeMaskColors);
+      return canvas;
+    });
 
     const canvas = document.createElement("canvas");
     canvas.width = wPx;
@@ -1762,6 +2557,22 @@ async function renderGPXToPdf(file, options) {
     const ctx = canvas.getContext("2d");
     ctx.drawImage(baseImg, 0, 0, wPx, hPx);
     ctx.drawImage(gridImg, 0, 0, wPx, hPx);
+    if (maskedHeightOverlays.length) {
+      ctx.save();
+      ctx.globalAlpha = heightOpacity;
+      maskedHeightOverlays.forEach((img) => {
+        ctx.drawImage(img, 0, 0, wPx, hPx);
+      });
+      ctx.restore();
+    }
+    if (routeOverlayImgs.length) {
+      ctx.save();
+      ctx.globalAlpha = ROUTE_OVERLAY_OPACITY;
+      routeOverlayImgs.forEach((img) => {
+        ctx.drawImage(img, 0, 0, wPx, hPx);
+      });
+      ctx.restore();
+    }
     drawTrackOnCanvas(
       ctx,
       xs,
@@ -1769,9 +2580,10 @@ async function renderGPXToPdf(file, options) {
       pageBBox,
       wPx,
       hPx,
-      options.trackColor ?? "#ff0000"
+      options.trackColor ?? "#ff0000",
+      options.trackOpacity
     );
-    drawPageLabel(ctx, options.scale, epsg);
+    drawPageLabel(ctx, idx + 1, options.scale, epsg);
     if (declinationModel) {
       const centerX = (pageBBox[0] + pageBBox[2]) / 2;
       const centerY = (pageBBox[1] + pageBBox[3]) / 2;
@@ -1786,12 +2598,21 @@ async function renderGPXToPdf(file, options) {
       drawDeclinationLabel(ctx, info.decl, convergence, wPx, hPx);
     }
 
-    const pngBlob = await canvasToBlob(canvas, "image/png");
-    if (!pngBlob) {
+    const imageFormat = options.pageImageFormat ?? "image/png";
+    const useJpeg = imageFormat === "image/jpeg";
+    const quality = useJpeg
+      ? clampPdfQuality(
+          Number.isFinite(options.pageImageQuality)
+            ? options.pageImageQuality
+            : DEFAULT_JPEG_QUALITY
+        )
+      : undefined;
+    const imageBlob = await canvasToBlob(canvas, imageFormat, quality);
+    if (!imageBlob) {
       throw new Error("Kunne ikke oprette sidebillede.");
     }
 
-    results[idx] = { pngBlob };
+    results[idx] = { imageBlob, imageFormat };
     completed += 1;
     progress.update(completed);
   });
@@ -1803,13 +2624,16 @@ async function renderGPXToPdf(file, options) {
   setStatus("Samler PDF...", true);
 
   for (let idx = 0; idx < results.length; idx += 1) {
-    const { pngBlob } = results[idx];
-    const pngBytes = await pngBlob.arrayBuffer();
+    const { imageBlob, imageFormat } = results[idx];
+    const imageBytes = await imageBlob.arrayBuffer();
     const { orientation } = pages[idx];
     const [paperWmm, paperHmm] = paperDimensionsMm(options.paper, orientation);
     const pageWidthPt = (paperWmm / 25.4) * 72;
     const pageHeightPt = (paperHmm / 25.4) * 72;
-    const embedded = await pdfDoc.embedPng(pngBytes);
+    const embedded =
+      imageFormat === "image/jpeg"
+        ? await pdfDoc.embedJpg(imageBytes)
+        : await pdfDoc.embedPng(imageBytes);
     const page = pdfDoc.addPage([pageWidthPt, pageHeightPt]);
 
     page.drawImage(embedded, {
@@ -1826,6 +2650,7 @@ async function renderGPXToPdf(file, options) {
 
 setupSegmentedControls();
 setupColorPicker();
+setupTrackOpacity();
 setupSidebarToggle();
 setupConfirmModal();
 initMap();
@@ -1835,10 +2660,25 @@ const fileInput = document.getElementById("gpxFile");
 
 function updateFileMeta(file, pointsLonLat) {
   const lengthMeters = computeTrackLengthMeters(pointsLonLat);
-  fileMetaEl.innerHTML = `
-    <div><strong>Fil:</strong> ${file.name}</div>
-    <div><strong>Sporlængde:</strong> ${formatDistance(lengthMeters)}</div>
-  `;
+  fileMetaEl.textContent = "";
+  const nameRow = document.createElement("div");
+  const nameLabel = document.createElement("strong");
+  nameLabel.textContent = "Fil:";
+  const nameValue = document.createElement("span");
+  nameValue.textContent = ` ${file.name}`;
+  nameRow.appendChild(nameLabel);
+  nameRow.appendChild(nameValue);
+
+  const lengthRow = document.createElement("div");
+  const lengthLabel = document.createElement("strong");
+  lengthLabel.textContent = "Sporlængde:";
+  const lengthValue = document.createElement("span");
+  lengthValue.textContent = ` ${formatDistance(lengthMeters)}`;
+  lengthRow.appendChild(lengthLabel);
+  lengthRow.appendChild(lengthValue);
+
+  fileMetaEl.appendChild(nameRow);
+  fileMetaEl.appendChild(lengthRow);
   fileMetaEl.classList.remove("hidden");
 }
 
@@ -1856,6 +2696,11 @@ function getMarginValue() {
     : DEFAULT_MARGIN;
 }
 
+function getDpiValue() {
+  const dpiInput = Number(document.getElementById("dpi").value);
+  return Number.isFinite(dpiInput) ? dpiInput : DEFAULT_DPI;
+}
+
 function generateLayout(statusMessage) {
   if (!cachedPoints) {
     setStatus("Vælg en GPX-fil.");
@@ -1865,13 +2710,15 @@ function generateLayout(statusMessage) {
   setStatus(statusMessage || "Beregner layout...", true);
   const overlapValue = getOverlapValue();
   const marginValue = getMarginValue();
+  const dpiValue = getDpiValue();
   const layout = computeLayoutPages(cachedPoints, {
     scale: selections.scale,
-    dpi: DEFAULT_DPI,
+    dpi: dpiValue,
     paper: selections.paper,
     orientation: selections.orientation,
     overlap: overlapValue,
     margin: marginValue,
+    projection: projectionState,
   });
   layoutPages = layout.pages;
   ensurePageIds(layoutPages);
@@ -1883,21 +2730,73 @@ function generateLayout(statusMessage) {
   updateRenderButtonState();
   renderPageOverlays();
   updateSelectionBar();
+  const nextHeightBounds = computeHeightOverlayBounds();
+  if (!boundsEqual(heightOverlayBounds, nextHeightBounds)) {
+    heightOverlayBounds = nextHeightBounds;
+    refreshHeightOverlays();
+  }
+}
+
+function computeHeightOverlayBounds() {
+  if (!layoutPages.length || !projectionState?.transformer || !L) return null;
+  let bounds = null;
+  layoutPages.forEach((page) => {
+    const pageBounds = bboxToLatLngBounds(page.bbox, projectionState.transformer);
+    if (!pageBounds) return;
+    bounds = bounds ? bounds.extend(pageBounds) : pageBounds;
+  });
+  return bounds;
+}
+
+function boundsEqual(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (typeof a.equals === "function") return a.equals(b);
+  const aSw = a.getSouthWest();
+  const aNe = a.getNorthEast();
+  const bSw = b.getSouthWest();
+  const bNe = b.getNorthEast();
+  const tol = 1e-6;
+  return (
+    Math.abs(aSw.lat - bSw.lat) < tol &&
+    Math.abs(aSw.lng - bSw.lng) < tol &&
+    Math.abs(aNe.lat - bNe.lat) < tol &&
+    Math.abs(aNe.lng - bNe.lng) < tol
+  );
 }
 
 async function handleFileSelection(file) {
   if (!file) return;
   selectedFile = file;
   cachedPoints = null;
+  projectionState = null;
   renderBtn.textContent = "Generér kort-PDF";
   clearDownload();
   resetLayoutState();
   setStatus("Læser GPX...");
   try {
-    const text = await file.text();
-    const points = parseGPX(text);
+    let points;
+    let projection;
+    if (file.size > LARGE_FILE_THRESHOLD) {
+      try {
+        projection = await parseLargeGpxWithWorker(file);
+        points = projection.pointsLonLat;
+      } catch (workerError) {
+        const text = await file.text();
+        points = parseGPX(text);
+        projection = buildProjection(points);
+      }
+    } else {
+      const text = await file.text();
+      points = parseGPX(text);
+      projection = buildProjection(points);
+    }
     cachedPoints = points;
-    transformerState = transformerForPoints(points);
+    projectionState = projection;
+    transformerState = {
+      transformer: projection.transformer,
+      epsg: projection.epsg,
+    };
     updateFileMeta(file, points);
     updateTrackLayer(points);
     setProgress(2, [1]);
@@ -1911,6 +2810,7 @@ async function handleFileSelection(file) {
     setStatus(`Fejl: ${message}`);
     fileMetaEl.classList.add("hidden");
     transformerState = null;
+    projectionState = null;
     clearTrackLayer();
     resetLayoutState();
   }
@@ -1981,14 +2881,20 @@ selectionBarEl.addEventListener("click", (event) => {
 
 const overlapInputEl = document.getElementById("overlap");
 overlapInputEl.dataset.prev = overlapInputEl.value;
-overlapInputEl.addEventListener("input", async () => {
+updateOverlapLabel();
+overlapInputEl.addEventListener("input", () => {
+  updateOverlapLabel();
+});
+overlapInputEl.addEventListener("change", async () => {
   if (!(await confirmOverrideManualEdits())) {
     overlapInputEl.value = overlapInputEl.dataset.prev || overlapInputEl.value;
+    updateOverlapLabel();
     return;
   }
   const nextValue = Number(overlapInputEl.value);
   if (!Number.isFinite(nextValue)) return;
   overlapInputEl.dataset.prev = overlapInputEl.value;
+  updateOverlapLabel();
   if (cachedPoints) {
     generateLayout("Overlap er ændret. Layout opdateres...");
   }
@@ -1996,19 +2902,100 @@ overlapInputEl.addEventListener("input", async () => {
 
 const marginInputEl = document.getElementById("margin");
 marginInputEl.dataset.prev = marginInputEl.value;
-marginInputEl.addEventListener("input", async () => {
+updateMarginLabel();
+marginInputEl.addEventListener("input", () => {
+  updateMarginLabel();
+});
+marginInputEl.addEventListener("change", async () => {
   if (!(await confirmOverrideManualEdits())) {
     marginInputEl.value = marginInputEl.dataset.prev || marginInputEl.value;
+    updateMarginLabel();
     return;
   }
   const nextValue = Number(marginInputEl.value);
   if (!Number.isFinite(nextValue)) return;
   marginInputEl.dataset.prev = marginInputEl.value;
+  updateMarginLabel();
   if (cachedPoints) {
     generateLayout("Sikkerhedsmargin er ændret. Layout opdateres...");
   }
 });
 
+const dpiInputEl = document.getElementById("dpi");
+dpiInputEl.dataset.prev = dpiInputEl.value;
+dpiInputEl.addEventListener("change", async () => {
+  if (!(await confirmOverrideManualEdits())) {
+    dpiInputEl.value = dpiInputEl.dataset.prev || dpiInputEl.value;
+    return;
+  }
+  const nextValue = Number(dpiInputEl.value);
+  if (!Number.isFinite(nextValue)) return;
+  dpiInputEl.dataset.prev = dpiInputEl.value;
+  if (cachedPoints) {
+    generateLayout("Opløsning er ændret. Layout opdateres...");
+  }
+});
+
+if (skiRoutesToggleEl) {
+  skiRoutesToggleEl.addEventListener("change", () => {
+    updateRouteOverlays();
+  });
+}
+
+if (hikeRoutesToggleEl) {
+  hikeRoutesToggleEl.addEventListener("change", () => {
+    updateRouteOverlays();
+  });
+}
+
+heightLayerToggleEls.forEach((toggle) => {
+  toggle.addEventListener("change", () => {
+    updateHeightOpacityVisibility();
+    updateHeightMaskVisibility();
+    updateHeightLegendVisibility();
+    updateHeightOverlays();
+  });
+});
+
+if (heightOpacityEl) {
+  updateHeightOpacityLabel();
+  heightOpacityEl.addEventListener("input", () => {
+    updateHeightOpacityLabel();
+    heightOverlayLayers.forEach((layer) => {
+      layer.setOpacity(effectiveHeightOpacity());
+    });
+  });
+}
+
+if (heightMaskGreenAEl) {
+  heightMaskGreenAEl.addEventListener("change", () => {
+    refreshHeightOverlays();
+  });
+}
+
+if (heightMaskGreenBEl) {
+  heightMaskGreenBEl.addEventListener("change", () => {
+    refreshHeightOverlays();
+  });
+}
+
+updateHeightOpacityVisibility();
+updateHeightMaskVisibility();
+
+if (pdfJpegToggleEl) {
+  pdfJpegToggleEl.addEventListener("change", () => {
+    updateJpegQualityVisibility();
+  });
+}
+
+if (jpegQualityEl) {
+  updateJpegQualityLabel();
+  jpegQualityEl.addEventListener("input", () => {
+    updateJpegQualityLabel();
+  });
+}
+
+updateJpegQualityVisibility();
 
 controlsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -2031,7 +3018,36 @@ controlsForm.addEventListener("submit", async (event) => {
 
   const overlapValue = getOverlapValue();
   const marginValue = getMarginValue();
+  const dpiValue = getDpiValue();
   const showDeclination = document.getElementById("declinationToggle").checked;
+  const showSkiRoutes = Boolean(skiRoutesToggleEl?.checked);
+  const showHikeRoutes = Boolean(hikeRoutesToggleEl?.checked);
+  const useJpeg = Boolean(pdfJpegToggleEl?.checked);
+  const jpegQualityValue = Number(jpegQualityEl?.value);
+  const pageImageFormat = useJpeg ? "image/jpeg" : "image/png";
+  const pageImageQuality = Number.isFinite(jpegQualityValue)
+    ? jpegQualityValue
+    : DEFAULT_JPEG_QUALITY;
+  const heightLayers = getSelectedHeightLayers();
+  const heightOpacity = effectiveHeightOpacity();
+  const trackOpacity = selections.trackOpacity;
+  window.umami?.track("generate-pdf", {
+    scale: selections.scale,
+    paper: selections.paper,
+    orientation: selections.orientation,
+    overlap: overlapValue,
+    margin: marginValue,
+    dpi: dpiValue,
+    showDeclination,
+    showSkiRoutes,
+    showHikeRoutes,
+    heightLayers,
+    heightOpacity,
+    trackOpacity,
+    trackColor: selections.trackColor,
+    pageImageFormat,
+    pageImageQuality,
+  });
   renderBtn.disabled = true;
   renderBtn.classList.remove("ready");
   setProgress(3, [1, 2]);
@@ -2040,15 +3056,23 @@ controlsForm.addEventListener("submit", async (event) => {
   try {
     const pdfBlob = await renderGPXToPdf(selectedFile, {
       scale: selections.scale,
-      dpi: DEFAULT_DPI,
+      dpi: dpiValue,
       paper: selections.paper,
       orientation: selections.orientation,
       overlap: overlapValue,
       margin: marginValue,
       layer: DEFAULT_LAYER,
       showDeclination,
+      showSkiRoutes,
+      showHikeRoutes,
+      heightLayers,
+      heightOpacity,
+      trackOpacity,
       trackColor: selections.trackColor,
+      pageImageFormat,
+      pageImageQuality,
       pointsLonLat: cachedPoints,
+      projection: projectionState,
       pages: layoutPages,
     });
 

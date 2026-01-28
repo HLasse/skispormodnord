@@ -24,6 +24,13 @@
           <div class="map-panel">
             <div id="map" class="map"></div>
             <div class="map-overlay">
+              <div class="map-legend hidden" id="heightLegend">
+                <img
+                  id="heightLegendImg"
+                  alt="Hældning legend"
+                  loading="lazy"
+                />
+              </div>
               <button type="button" class="map-action" id="addPageBtn">
                 Tilføj side
               </button>
@@ -80,6 +87,20 @@
                   <button type="button" class="color-swatch" data-color="#0fb2cc" aria-label="Havblå"></button>
                   <button type="button" class="color-swatch" data-color="#4f6ef7" aria-label="Indigoblå"></button>
                 </div>
+                <label class="track-opacity range-field" for="trackOpacity">
+                  <span>Sportransparens</span>
+                  <div class="range-row">
+                    <input
+                      type="range"
+                      id="trackOpacity"
+                      min="0.3"
+                      max="1"
+                      step="0.05"
+                      value="0.8"
+                    />
+                    <output id="trackOpacityValue" for="trackOpacity">80%</output>
+                  </div>
+                </label>
               </div>
 
               <div class="control-section">
@@ -110,17 +131,94 @@
                   <label class="field">
                     <span>Orientering</span>
                     <div class="segmented" role="group" aria-label="Orientering">
+                      <button type="button" data-orientation="auto" class="active">
+                        Auto
+                      </button>
                       <button type="button" data-orientation="portrait">
                         Portræt
                       </button>
                       <button type="button" data-orientation="landscape">
                         Landskab
                       </button>
-                      <button type="button" data-orientation="auto" class="active">
-                        Auto
-                      </button>
                     </div>
                   </label>
+                </div>
+              </div>
+
+              <div class="control-section">
+                <div class="section-header">
+                  <span>Kortlag</span>
+                </div>
+                <div class="section-grid">
+                  <label class="field">
+                    <span>Skiruter</span>
+                    <input type="checkbox" id="skiRoutesToggle" />
+                  </label>
+                  <label class="field">
+                    <span>Vandreruter</span>
+                    <input type="checkbox" id="hikeRoutesToggle" />
+                  </label>
+                  <div class="layer-card">
+                    <label class="field">
+                      <span>Hældning</span>
+                      <input
+                        type="checkbox"
+                        id="heightSlopeToggle"
+                        class="height-layer-toggle"
+                        data-height-layer="DTM:helning_grader"
+                      />
+                      <div class="height-opacity range-field hidden" id="heightOpacityGroup">
+                        <span>Gennemsigtighed</span>
+                        <div class="range-row">
+                          <input
+                            type="range"
+                            id="heightOpacity"
+                            min="0.1"
+                            max="1"
+                            step="0.05"
+                            value="0.2"
+                          />
+                          <output id="heightOpacityValue" for="heightOpacity">20%</output>
+                        </div>
+                      </div>
+                      <div class="height-mask hidden" id="heightMaskGroup">
+                        <span>
+                          Filtrer hældning
+                          <span
+                            class="tooltip"
+                            data-tooltip="Vis/fjern overlay af lave hældninger."
+                            aria-label="Vis/fjern overlay af lave hældninger."
+                          >?</span>
+                        </span>
+                        <div class="height-mask-row">
+                          <label class="height-mask-toggle">
+                            <input
+                              type="checkbox"
+                              id="heightMaskGreenA"
+                              aria-label="Fjern lysegrøn hældning"
+                            />
+                            <span
+                              class="height-mask-swatch"
+                              data-color="#92d060"
+                              title="#92d060"
+                            ></span>
+                          </label>
+                          <label class="height-mask-toggle">
+                            <input
+                              type="checkbox"
+                              id="heightMaskGreenB"
+                              aria-label="Fjern gulgrøn hældning"
+                            />
+                            <span
+                              class="height-mask-swatch"
+                              data-color="#d9f08b"
+                              title="#d9f08b"
+                            ></span>
+                          </label>
+                        </div>
+                      </div>
+                    </label>
+                  </div>
                 </div>
               </div>
 
@@ -137,15 +235,19 @@
                           aria-label="Overlap mellem tilstødende sider. Højere værdier giver mere fælles område."
                         >?</span>
                       </span>
-                      <input
-                        type="number"
-                        id="overlap"
-                        min="0"
-                        max="90"
-                        step="1"
-                        value="5"
-                        required
-                      />
+                      <div class="range-field">
+                        <div class="range-row">
+                          <input
+                            type="range"
+                            id="overlap"
+                            min="0"
+                            max="20"
+                            step="1"
+                            value="5"
+                          />
+                          <output id="overlapValue" for="overlap">5%</output>
+                        </div>
+                      </div>
                     </label>
                     <label class="field">
                       <span>
@@ -156,21 +258,67 @@
                           aria-label="Mindste afstand fra spor til kant. Højere værdier giver mere terræn omkring sporet."
                         >?</span>
                       </span>
-                      <input
-                        type="number"
-                        id="margin"
-                        min="0"
-                        max="45"
-                        step="1"
-                        value="15"
-                        required
-                      />
+                      <div class="range-field">
+                        <div class="range-row">
+                          <input
+                            type="range"
+                            id="margin"
+                            min="0"
+                            max="20"
+                            step="1"
+                            value="15"
+                          />
+                          <output id="marginValue" for="margin">15%</output>
+                        </div>
+                      </div>
+                    </label>
+                    <label class="field">
+                      <span>
+                        Opløsning (DPI)
+                        <span
+                          class="tooltip"
+                          data-tooltip="Højere DPI giver skarpere PDF'er, men tager længere tid og giver større filer."
+                          aria-label="Højere DPI giver skarpere PDF'er, men tager længere tid og giver større filer."
+                        >?</span>
+                      </span>
+                      <select id="dpi" required>
+                        <option value="150">Lav (150 DPI)</option>
+                        <option value="300" selected>Mellem (300 DPI)</option>
+                        <option value="600">Høj (600 DPI)</option>
+                      </select>
                     </label>
 
                     <label class="field">
                       <span>Magnetisk deklination (per side)</span>
                       <input type="checkbox" id="declinationToggle" checked />
                     </label>
+                    <div class="layer-card">
+                      <label class="field">
+                        <span>
+                          Optimer filstørrelse
+                          <span
+                            class="tooltip"
+                            data-tooltip="Lav kortlag om til JPEG i stedet for PNG for at minimere filstørrelsen."
+                            aria-label="Lav kortlag om til JPEG i stedet for PNG for at minimere filstørrelsen."
+                          >?</span>
+                        </span>
+                        <input type="checkbox" id="pdfJpegToggle" checked />
+                        <div class="range-field hidden" id="jpegQualityGroup">
+                          <span>JPEG-kvalitet</span>
+                          <div class="range-row">
+                            <input
+                              type="range"
+                              id="jpegQuality"
+                              min="0.6"
+                              max="1"
+                              step="0.05"
+                              value="0.9"
+                            />
+                            <output id="jpegQualityValue" for="jpegQuality">90%</output>
+                          </div>
+                        </div>
+                      </label>
+                    </div>
                   </div>
                 </details>
               </div>
