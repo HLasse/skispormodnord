@@ -91,6 +91,11 @@ const renderBtn = document.getElementById("renderBtn");
 const renderProgressEl = document.getElementById("renderProgress");
 const mapEl = document.getElementById("map");
 const mapHintEl = document.getElementById("mapHint");
+const mapHintScrim = mapHintEl?.querySelector(".map-hint-scrim") ?? null;
+const mapHintScrimPath = document.getElementById("mapHintScrimPath");
+const mapHintOutline = mapHintEl?.querySelector(".map-hint-outline") ?? null;
+const mapHintOutlinePrimary = document.getElementById("mapHintOutlinePrimary");
+const mapHintOutlineSecondary = document.getElementById("mapHintOutlineSecondary");
 const selectionBarEl = document.getElementById("selectionBar");
 const selectionSelectEl = document.getElementById("selectionSelect");
 const orientationToggleEl = document.getElementById("orientationToggle");
@@ -105,8 +110,6 @@ const confirmAcceptBtn = document.getElementById("confirmAcceptBtn");
 const confirmCancelBtn = document.getElementById("confirmCancelBtn");
 const skiRoutesToggleEl = document.getElementById("skiRoutesToggle");
 const hikeRoutesToggleEl = document.getElementById("hikeRoutesToggle");
-const heightLegendEl = document.getElementById("heightLegend");
-const heightLegendImgEl = document.getElementById("heightLegendImg");
 const heightLayerToggleEls = Array.from(
   document.querySelectorAll(".height-layer-toggle")
 );
@@ -206,6 +209,10 @@ function isMapHintDismissed() {
 function dismissMapHint() {
   if (!mapHintEl) return;
   mapHintEl.classList.add("hidden");
+  document.body.classList.remove("map-hint-active");
+  if (dropzoneEl) {
+    dropzoneEl.style.background = "";
+  }
   try {
     sessionStorage.setItem(MAP_HINT_SESSION_KEY, "1");
   } catch (error) {
@@ -214,13 +221,34 @@ function dismissMapHint() {
 }
 
 function updateMapHintHighlight() {
-  if (!mapHintEl || !addPageBtn || !mapEl) return;
-  if (mapHintEl.classList.contains("hidden")) return;
-  const mapRect = mapEl.getBoundingClientRect();
+  if (!mapHintEl || !addPageBtn) return;
+  if (mapHintEl.classList.contains("hidden")) {
+    document.body.classList.remove("map-hint-active");
+    if (dropzoneEl) {
+      dropzoneEl.style.background = "";
+    }
+    return;
+  }
+  document.body.classList.add("map-hint-active");
+  if (dropzoneEl) {
+    dropzoneEl.style.background = "transparent";
+  }
+  const viewportW = window.innerWidth;
+  const viewportH = window.innerHeight;
+  if (mapHintScrim) {
+    mapHintScrim.setAttribute("width", `${viewportW}`);
+    mapHintScrim.setAttribute("height", `${viewportH}`);
+    mapHintScrim.setAttribute("viewBox", `0 0 ${viewportW} ${viewportH}`);
+  }
+  if (mapHintOutline) {
+    mapHintOutline.setAttribute("width", `${viewportW}`);
+    mapHintOutline.setAttribute("height", `${viewportH}`);
+    mapHintOutline.setAttribute("viewBox", `0 0 ${viewportW} ${viewportH}`);
+  }
   const btnRect = addPageBtn.getBoundingClientRect();
   const padding = 10;
-  const x = btnRect.left - mapRect.left - padding;
-  const y = btnRect.top - mapRect.top - padding;
+  const x = btnRect.left - padding;
+  const y = btnRect.top - padding;
   const w = btnRect.width + padding * 2;
   const h = btnRect.height + padding * 2;
   const arrowLength = 58;
@@ -234,6 +262,75 @@ function updateMapHintHighlight() {
   mapHintEl.style.setProperty("--hint-h", `${h}px`);
   mapHintEl.style.setProperty("--hint-arrow-x", `${arrowX}px`);
   mapHintEl.style.setProperty("--hint-arrow-y", `${arrowY}px`);
+  mapHintEl.style.setProperty("--hint-radius", "999px");
+  mapHintEl.style.setProperty("--hint-arrow-rot", "45deg");
+  const primaryCutout = roundedRectPath(x, y, w, h, 999);
+  if (mapHintOutlinePrimary) {
+    mapHintOutlinePrimary.setAttribute("x", `${x}`);
+    mapHintOutlinePrimary.setAttribute("y", `${y}`);
+    mapHintOutlinePrimary.setAttribute("width", `${w}`);
+    mapHintOutlinePrimary.setAttribute("height", `${h}`);
+    mapHintOutlinePrimary.setAttribute("rx", "999");
+    mapHintOutlinePrimary.setAttribute("ry", "999");
+  }
+
+  let secondaryCutout = "";
+  if (dropzoneEl) {
+    const dropTarget =
+      dropzoneEl.querySelector(".dropzone-inner") || dropzoneEl;
+    const dropRect = dropTarget.getBoundingClientRect();
+    const dropPadding = 6;
+    const dropX = dropRect.left - dropPadding;
+    const dropY = dropRect.top - dropPadding;
+    const dropW = dropRect.width + dropPadding * 2;
+    const dropH = dropRect.height + dropPadding * 2;
+    const sidebarLeft = sidebarEl
+      ? sidebarEl.getBoundingClientRect().left
+      : dropX;
+    const dropArrowX = Math.min(
+      dropX - arrowGap - diagonalOffset,
+      sidebarLeft - arrowGap - diagonalOffset
+    );
+    const dropArrowY = dropY + dropH * 0.5 - 2.5;
+    mapHintEl.style.setProperty("--hint2-x", `${dropX}px`);
+    mapHintEl.style.setProperty("--hint2-y", `${dropY}px`);
+    mapHintEl.style.setProperty("--hint2-w", `${dropW}px`);
+    mapHintEl.style.setProperty("--hint2-h", `${dropH}px`);
+    mapHintEl.style.setProperty("--hint2-arrow-x", `${dropArrowX}px`);
+    mapHintEl.style.setProperty("--hint2-arrow-y", `${dropArrowY}px`);
+    mapHintEl.style.setProperty("--hint2-radius", "18px");
+    mapHintEl.style.setProperty("--hint2-arrow-rot", "0deg");
+    secondaryCutout = roundedRectPath(dropX, dropY, dropW, dropH, 16);
+    if (mapHintOutlineSecondary) {
+      mapHintOutlineSecondary.setAttribute("x", `${dropX}`);
+      mapHintOutlineSecondary.setAttribute("y", `${dropY}`);
+      mapHintOutlineSecondary.setAttribute("width", `${dropW}`);
+      mapHintOutlineSecondary.setAttribute("height", `${dropH}`);
+      mapHintOutlineSecondary.setAttribute("rx", "16");
+      mapHintOutlineSecondary.setAttribute("ry", "16");
+    }
+  }
+
+  if (mapHintScrimPath) {
+    const base = `M0 0H${viewportW}V${viewportH}H0Z`;
+    mapHintScrimPath.setAttribute("d", `${base}${primaryCutout}${secondaryCutout}`);
+  }
+}
+
+function roundedRectPath(x, y, w, h, r) {
+  const radius = Math.min(r, w / 2, h / 2);
+  return [
+    `M${x + radius} ${y}`,
+    `H${x + w - radius}`,
+    `A${radius} ${radius} 0 0 1 ${x + w} ${y + radius}`,
+    `V${y + h - radius}`,
+    `A${radius} ${radius} 0 0 1 ${x + w - radius} ${y + h}`,
+    `H${x + radius}`,
+    `A${radius} ${radius} 0 0 1 ${x} ${y + h - radius}`,
+    `V${y + radius}`,
+    `A${radius} ${radius} 0 0 1 ${x + radius} ${y}`,
+    "Z",
+  ].join("");
 }
 
 function getPdfFilename() {
@@ -985,28 +1082,9 @@ function updateHeightMaskVisibility() {
   heightMaskGroupEl.classList.toggle("hidden", !anyOn);
 }
 
-function updateHeightLegendVisibility() {
-  if (!heightLegendEl || !heightLegendImgEl) return;
-  const anyOn = heightLayerToggleEls.some((toggle) => toggle.checked);
-  heightLegendEl.classList.toggle("hidden", !anyOn);
-}
-
-function ensureHeightLegendSrc() {
-  if (!heightLegendImgEl || heightLegendImgEl.src) return;
-  const params = new URLSearchParams({
-    request: "GetLegendGraphic",
-    version: "1.3.0",
-    format: "image/png",
-    layer: "DTM:helning_grader",
-  });
-  heightLegendImgEl.src = `${WMS_HEIGHT_URL}?${params.toString()}`;
-}
-
 function updateHeightOverlays() {
   if (!mapInstance || !L) return;
   ensureHeightOverlayPane();
-  updateHeightLegendVisibility();
-  ensureHeightLegendSrc();
   heightLayerToggleEls.forEach((toggle) => {
     const layerName = toggle.dataset.heightLayer;
     if (!layerName) return;
@@ -1101,7 +1179,9 @@ function initMap() {
   if (mapHintEl) {
     if (isMapHintDismissed()) {
       mapHintEl.classList.add("hidden");
+      document.body.classList.remove("map-hint-active");
     } else {
+      document.body.classList.add("map-hint-active");
       updateMapHintHighlight();
       const hintEvents = [
         "mousedown",
@@ -1111,16 +1191,27 @@ function initMap() {
         "dragstart",
         "click",
       ];
+      const sidebarEvents = ["mousedown", "touchstart", "click", "scroll"];
       const handleHintDismiss = () => {
         if (mapHintEl.classList.contains("hidden")) return;
         dismissMapHint();
         hintEvents.forEach((eventName) =>
           mapInstance.off(eventName, handleHintDismiss)
         );
+        if (sidebarEl) {
+          sidebarEvents.forEach((eventName) =>
+            sidebarEl.removeEventListener(eventName, handleHintDismiss)
+          );
+        }
       };
       hintEvents.forEach((eventName) =>
         mapInstance.on(eventName, handleHintDismiss)
       );
+      if (sidebarEl) {
+        sidebarEvents.forEach((eventName) =>
+          sidebarEl.addEventListener(eventName, handleHintDismiss)
+        );
+      }
     }
   }
 }
@@ -3240,7 +3331,6 @@ heightLayerToggleEls.forEach((toggle) => {
   toggle.addEventListener("change", () => {
     updateHeightOpacityVisibility();
     updateHeightMaskVisibility();
-    updateHeightLegendVisibility();
     updateHeightOverlays();
   });
 });

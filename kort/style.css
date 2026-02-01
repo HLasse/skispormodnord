@@ -90,37 +90,49 @@ h1 {
   z-index: 1000;
 }
 
-.map-legend {
-  position: absolute;
-  left: 16px;
-  bottom: 18px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid #e1d8c9;
-  border-radius: 12px;
-  padding: 8px 10px;
-  box-shadow: 0 10px 24px rgba(30, 27, 22, 0.12);
-  pointer-events: auto;
-}
-
-.map-legend.hidden {
-  display: none;
-}
-
-.map-legend img {
-  display: block;
-  max-width: 140px;
-  height: auto;
-}
 
 .map-hint {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  background: rgba(25, 22, 18, 0.5);
   display: grid;
   place-items: center;
   padding: 24px;
   text-align: center;
   pointer-events: none;
+  z-index: 3000;
+}
+
+.map-hint-scrim {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+}
+
+.map-hint-scrim path {
+  fill: rgba(25, 22, 18, 0.5);
+}
+
+.map-hint-outline {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
+
+.map-hint-outline rect {
+  fill: none;
+  stroke: rgba(211, 107, 45, 0.95);
+  stroke-width: 2.5;
+  filter: drop-shadow(0 0 0 rgba(211, 107, 45, 0))
+    drop-shadow(0 0 8px rgba(211, 107, 45, 0.25))
+    drop-shadow(0 0 18px rgba(211, 107, 45, 0.18));
+}
+
+.map-hint-outline #mapHintOutlinePrimary {
+  display: none;
 }
 
 .map-hint-highlight {
@@ -129,10 +141,20 @@ h1 {
   top: var(--hint-y, 0px);
   width: var(--hint-w, 0px);
   height: var(--hint-h, 0px);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.16);
-  border: 2px solid rgba(211, 107, 45, 0.85);
+  border-radius: var(--hint-radius, 999px);
+  background: transparent;
+  border: 2px solid rgba(211, 107, 45, 0.9);
   box-shadow: 0 0 0 6px rgba(211, 107, 45, 0.12);
+  z-index: 1;
+}
+
+.map-hint-highlight.secondary {
+  left: var(--hint2-x, 0px);
+  top: var(--hint2-y, 0px);
+  width: var(--hint2-w, 0px);
+  height: var(--hint2-h, 0px);
+  border-radius: var(--hint2-radius, 16px);
+  display: none;
 }
 
 .map-hint-arrow {
@@ -141,11 +163,12 @@ h1 {
   top: var(--hint-arrow-y, 0px);
   width: 58px;
   height: 5px;
-  background: rgba(211, 107, 45, 0.95);
+  background: rgba(211, 107, 45, 0.9);
   border-radius: 999px;
-  transform: rotate(45deg);
+  transform: rotate(var(--hint-arrow-rot, 45deg));
   transform-origin: left center;
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
+  z-index: 1;
 }
 
 .map-hint-arrow::after {
@@ -154,9 +177,15 @@ h1 {
   right: -2px;
   top: 50%;
   transform: translateY(-50%);
-  border-left: 12px solid rgba(211, 107, 45, 0.95);
+  border-left: 12px solid rgba(211, 107, 45, 0.9);
   border-top: 8px solid transparent;
   border-bottom: 8px solid transparent;
+}
+
+.map-hint-arrow.clone {
+  left: var(--hint2-arrow-x, 0px);
+  top: var(--hint2-arrow-y, 0px);
+  transform: rotate(var(--hint2-arrow-rot, 45deg));
 }
 
 .map-hint-text {
@@ -170,7 +199,7 @@ h1 {
   color: var(--ink);
   box-shadow: 0 16px 30px rgba(30, 27, 22, 0.2);
   position: relative;
-  z-index: 1;
+  z-index: 2;
 }
 
 .map-action {
@@ -588,6 +617,14 @@ h1 {
   transition: border-color 0.2s ease, background 0.2s ease;
 }
 
+.map-hint-active .dropzone {
+  background: transparent !important;
+}
+
+.map-hint-active .dropzone.active {
+  background: transparent !important;
+}
+
 .dropzone strong {
   display: block;
   font-size: 16px;
@@ -601,6 +638,7 @@ h1 {
 .dropzone input[type="file"] {
   display: none;
 }
+
 
 .dropzone.active {
   border-color: var(--accent-500);
@@ -785,7 +823,7 @@ h1 {
 .sticky-render {
   position: sticky;
   bottom: 0;
-  padding: 70px 0 8px;
+  padding: 36px 0 8px;
   background: linear-gradient(
     180deg,
     rgba(255, 253, 249, 0) 0%,

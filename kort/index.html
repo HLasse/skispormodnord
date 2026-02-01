@@ -33,22 +33,6 @@
           <div class="map-panel">
             <div id="map" class="map"></div>
             <div class="map-overlay">
-              <div class="map-legend hidden" id="heightLegend">
-                <img
-                  id="heightLegendImg"
-                  alt="Hældning legend"
-                  loading="lazy"
-                />
-              </div>
-              <div class="map-hint" id="mapHint">
-                <div class="map-hint-highlight" aria-hidden="true"></div>
-                <div class="map-hint-arrow" aria-hidden="true"></div>
-                <span class="map-hint-text">
-                  Upload en GPX fil til højre eller tryk på "Tilføj side" for at begynde.
-                  Du kan trække i siderne for at justere deres placering, og
-                  klikke på dem for at redigere.
-                </span>
-              </div>
               <button type="button" class="map-action" id="addPageBtn">
                 Tilføj side
               </button>
@@ -445,6 +429,25 @@
             </table>
           </footer>
         </aside>
+      </div>
+
+      <div class="map-hint" id="mapHint">
+        <svg class="map-hint-scrim" aria-hidden="true">
+          <path id="mapHintScrimPath" fill-rule="evenodd"></path>
+        </svg>
+        <svg class="map-hint-outline" aria-hidden="true">
+          <rect id="mapHintOutlinePrimary" x="0" y="0" width="0" height="0" rx="999" ry="999"></rect>
+          <rect id="mapHintOutlineSecondary" x="0" y="0" width="0" height="0" rx="16" ry="16"></rect>
+        </svg>
+        <div class="map-hint-highlight" aria-hidden="true"></div>
+        <div class="map-hint-highlight secondary" aria-hidden="true"></div>
+        <div class="map-hint-arrow" aria-hidden="true"></div>
+        <div class="map-hint-arrow clone" aria-hidden="true"></div>
+        <span class="map-hint-text">
+          Upload en GPX fil til højre eller tryk på "Tilføj side" for at begynde.
+          Du kan trække i siderne for at justere deres placering, og
+          klikke på dem for at redigere.
+        </span>
       </div>
     </div>
 
