@@ -238,6 +238,11 @@ Derudover er disse sider uundværlige til både planlægning og undervejs på tu
 
 Vi brugte primært kort og kompas til navigation, og mest GPS for sikkerhed og til at dobbelttjekke ved tvivl. Det er et stort og tidskrævende arbejde at forberede kort til så lang en tur, men heldigvis findes der fine hjemmesider til at gøre dette. 
 
+<div markdown="1" class="box-note">
+Vi har lavet et værktøj der automatisk laver print-klar PDF'er til dig hvis du uploader en GPX fil. Prøv det [her.](/kort/)
+</div>
+
+
 I Norge brugte vi primært [kartmannen.no](https://kartmannen.no/kartutskrift/). Her kan du uploade en GPX fil, så du relativt nemt kan vælge det rigtige område at printe. Der er også funktioner til at vise brathed/skredfare, svækket is, skiruter, fodruter, og andet godt. Kortene skal laves én side ad gangen, så væbn dig med tålmodighed.
 
 På [Norgeskart](norgeskart.no) kan der også laves kort. Den laver 9 sider på en gang, så man får hurtigere dækket et større område. Til gengæld kræver det lidt oprydning at fjerne de sider der ikke er nødvendige. Er god da man også kan lave kort et stykke ind i Sverige. Understøtter ikke GPX.
