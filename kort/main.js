@@ -96,6 +96,11 @@ const mapHintScrimPath = document.getElementById("mapHintScrimPath");
 const mapHintOutline = mapHintEl?.querySelector(".map-hint-outline") ?? null;
 const mapHintOutlinePrimary = document.getElementById("mapHintOutlinePrimary");
 const mapHintOutlineSecondary = document.getElementById("mapHintOutlineSecondary");
+const mapHintTipPrimaryEl = document.getElementById("mapHintTipPrimary");
+const mapHintTipSecondaryEl = document.getElementById("mapHintTipSecondary");
+const mapToastEl = document.getElementById("mapToast");
+const mapToastTextEl = document.getElementById("mapToastText");
+const mapToastCloseEl = document.getElementById("mapToastClose");
 const selectionBarEl = document.getElementById("selectionBar");
 const selectionSelectEl = document.getElementById("selectionSelect");
 const orientationToggleEl = document.getElementById("orientationToggle");
@@ -135,6 +140,8 @@ const jpegQualityGroupEl = document.getElementById("jpegQualityGroup");
 const jpegQualityEl = document.getElementById("jpegQuality");
 const jpegQualityValueEl = document.getElementById("jpegQualityValue");
 const MAP_HINT_SESSION_KEY = "gpx_map_hint_dismissed";
+const MAP_TOAST_AUTO_KEY = "gpx_map_toast_auto_shown";
+const MAP_TOAST_MANUAL_KEY = "gpx_map_toast_manual_shown";
 
 const selections = {
   paper: "A4",
@@ -220,8 +227,78 @@ function dismissMapHint() {
   }
 }
 
+let mapToastTimeout = null;
+
+function hideMapToast() {
+  if (!mapToastEl) return;
+  mapToastEl.classList.remove("visible");
+  if (mapToastTimeout) {
+    window.clearTimeout(mapToastTimeout);
+    mapToastTimeout = null;
+  }
+}
+
+function showMapToast(message) {
+  if (!mapToastEl || !mapToastTextEl) return;
+  mapToastTextEl.textContent = message;
+  mapToastEl.classList.add("visible");
+  if (mapToastTimeout) {
+    window.clearTimeout(mapToastTimeout);
+  }
+  mapToastTimeout = window.setTimeout(() => {
+    hideMapToast();
+  }, 15200);
+}
+
+function shouldShowToast(key) {
+  try {
+    return sessionStorage.getItem(key) !== "1";
+  } catch (error) {
+    return true;
+  }
+}
+
+function markToastShown(key) {
+  try {
+    sessionStorage.setItem(key, "1");
+  } catch (error) {
+    // Ignore storage failures (private mode, etc.)
+  }
+}
+
+function showAutoLayoutToast(pageCount) {
+  if (!pageCount || !shouldShowToast(MAP_TOAST_AUTO_KEY)) return;
+  showMapToast(`Vi har lavet ${pageCount} sider til din rute. Træk i dem for at justere.`);
+  markToastShown(MAP_TOAST_AUTO_KEY);
+}
+
+function showManualLayoutToast() {
+  if (!shouldShowToast(MAP_TOAST_MANUAL_KEY)) return;
+  if (mapHintEl && !mapHintEl.classList.contains("hidden")) return;
+  showMapToast("Træk i siden for at justere. Klik for at slette eller ændre orientering.");
+  markToastShown(MAP_TOAST_MANUAL_KEY);
+}
+
+function positionHintTooltip(tooltipEl, targetRect, gap, viewportW, viewportH) {
+  if (!tooltipEl) return;
+  const tipRect = tooltipEl.getBoundingClientRect();
+  const width = tipRect.width || 240;
+  const height = tipRect.height || 60;
+  let x = targetRect.left + targetRect.width / 2 - width / 2;
+  let y = targetRect.top - height - gap;
+  if (y < 12) {
+    y = targetRect.bottom + gap;
+  }
+  const maxX = viewportW - width - 12;
+  const maxY = viewportH - height - 12;
+  x = Math.min(Math.max(12, x), maxX);
+  y = Math.min(Math.max(12, y), maxY);
+  tooltipEl.style.setProperty("--hint-tip-x", `${x}px`);
+  tooltipEl.style.setProperty("--hint-tip-y", `${y}px`);
+}
+
 function updateMapHintHighlight() {
-  if (!mapHintEl || !addPageBtn) return;
+  if (!mapHintEl || !addPageBtn || !dropzoneEl) return;
   if (mapHintEl.classList.contains("hidden")) {
     document.body.classList.remove("map-hint-active");
     if (dropzoneEl) {
@@ -246,74 +323,74 @@ function updateMapHintHighlight() {
     mapHintOutline.setAttribute("viewBox", `0 0 ${viewportW} ${viewportH}`);
   }
   const btnRect = addPageBtn.getBoundingClientRect();
-  const padding = 10;
-  const x = btnRect.left - padding;
-  const y = btnRect.top - padding;
-  const w = btnRect.width + padding * 2;
-  const h = btnRect.height + padding * 2;
-  const arrowLength = 58;
-  const arrowGap = 2;
-  const diagonalOffset = arrowLength / Math.SQRT2;
-  const arrowX = x - arrowGap - diagonalOffset;
-  const arrowY = y - arrowGap - diagonalOffset;
-  mapHintEl.style.setProperty("--hint-x", `${x}px`);
-  mapHintEl.style.setProperty("--hint-y", `${y}px`);
-  mapHintEl.style.setProperty("--hint-w", `${w}px`);
-  mapHintEl.style.setProperty("--hint-h", `${h}px`);
-  mapHintEl.style.setProperty("--hint-arrow-x", `${arrowX}px`);
-  mapHintEl.style.setProperty("--hint-arrow-y", `${arrowY}px`);
-  mapHintEl.style.setProperty("--hint-radius", "999px");
-  mapHintEl.style.setProperty("--hint-arrow-rot", "45deg");
-  const primaryCutout = roundedRectPath(x, y, w, h, 999);
+  const buttonPadding = 8;
+  const buttonRadius = Number.parseFloat(
+    window.getComputedStyle(addPageBtn).borderRadius
+  ) || 12;
+  const buttonHighlightRadius = buttonRadius + buttonPadding;
+  const btnX = btnRect.left - buttonPadding;
+  const btnY = btnRect.top - buttonPadding;
+  const btnW = btnRect.width + buttonPadding * 2;
+  const btnH = btnRect.height + buttonPadding * 2;
+  mapHintEl.style.setProperty("--hint-x", `${btnX}px`);
+  mapHintEl.style.setProperty("--hint-y", `${btnY}px`);
+  mapHintEl.style.setProperty("--hint-w", `${btnW}px`);
+  mapHintEl.style.setProperty("--hint-h", `${btnH}px`);
+  mapHintEl.style.setProperty("--hint-radius", `${buttonHighlightRadius}px`);
+  const buttonCutout = roundedRectPath(
+    btnX,
+    btnY,
+    btnW,
+    btnH,
+    buttonHighlightRadius
+  );
   if (mapHintOutlinePrimary) {
-    mapHintOutlinePrimary.setAttribute("x", `${x}`);
-    mapHintOutlinePrimary.setAttribute("y", `${y}`);
-    mapHintOutlinePrimary.setAttribute("width", `${w}`);
-    mapHintOutlinePrimary.setAttribute("height", `${h}`);
-    mapHintOutlinePrimary.setAttribute("rx", "999");
-    mapHintOutlinePrimary.setAttribute("ry", "999");
+    mapHintOutlinePrimary.setAttribute("x", `${btnX}`);
+    mapHintOutlinePrimary.setAttribute("y", `${btnY}`);
+    mapHintOutlinePrimary.setAttribute("width", `${btnW}`);
+    mapHintOutlinePrimary.setAttribute("height", `${btnH}`);
+    mapHintOutlinePrimary.setAttribute("rx", `${buttonHighlightRadius}`);
+    mapHintOutlinePrimary.setAttribute("ry", `${buttonHighlightRadius}`);
   }
 
-  let secondaryCutout = "";
-  if (dropzoneEl) {
-    const dropTarget =
-      dropzoneEl.querySelector(".dropzone-inner") || dropzoneEl;
-    const dropRect = dropTarget.getBoundingClientRect();
-    const dropPadding = 6;
-    const dropX = dropRect.left - dropPadding;
-    const dropY = dropRect.top - dropPadding;
-    const dropW = dropRect.width + dropPadding * 2;
-    const dropH = dropRect.height + dropPadding * 2;
-    const sidebarLeft = sidebarEl
-      ? sidebarEl.getBoundingClientRect().left
-      : dropX;
-    const dropArrowX = Math.min(
-      dropX - arrowGap - diagonalOffset,
-      sidebarLeft - arrowGap - diagonalOffset
-    );
-    const dropArrowY = dropY + dropH * 0.5 - 2.5;
-    mapHintEl.style.setProperty("--hint2-x", `${dropX}px`);
-    mapHintEl.style.setProperty("--hint2-y", `${dropY}px`);
-    mapHintEl.style.setProperty("--hint2-w", `${dropW}px`);
-    mapHintEl.style.setProperty("--hint2-h", `${dropH}px`);
-    mapHintEl.style.setProperty("--hint2-arrow-x", `${dropArrowX}px`);
-    mapHintEl.style.setProperty("--hint2-arrow-y", `${dropArrowY}px`);
-    mapHintEl.style.setProperty("--hint2-radius", "18px");
-    mapHintEl.style.setProperty("--hint2-arrow-rot", "0deg");
-    secondaryCutout = roundedRectPath(dropX, dropY, dropW, dropH, 16);
-    if (mapHintOutlineSecondary) {
-      mapHintOutlineSecondary.setAttribute("x", `${dropX}`);
-      mapHintOutlineSecondary.setAttribute("y", `${dropY}`);
-      mapHintOutlineSecondary.setAttribute("width", `${dropW}`);
-      mapHintOutlineSecondary.setAttribute("height", `${dropH}`);
-      mapHintOutlineSecondary.setAttribute("rx", "16");
-      mapHintOutlineSecondary.setAttribute("ry", "16");
-    }
+  const dropTarget = dropzoneEl.querySelector(".dropzone-inner") || dropzoneEl;
+  const dropRect = dropTarget.getBoundingClientRect();
+  const dropPadding = 0;
+  const dropRadius = Number.parseFloat(
+    window.getComputedStyle(dropTarget).borderRadius
+  ) || 16;
+  const dropHighlightRadius = dropRadius;
+  const dropX = dropRect.left - dropPadding;
+  const dropY = dropRect.top - dropPadding;
+  const dropW = dropRect.width + dropPadding * 2;
+  const dropH = dropRect.height + dropPadding * 2;
+  mapHintEl.style.setProperty("--hint2-x", `${dropX}px`);
+  mapHintEl.style.setProperty("--hint2-y", `${dropY}px`);
+  mapHintEl.style.setProperty("--hint2-w", `${dropW}px`);
+  mapHintEl.style.setProperty("--hint2-h", `${dropH}px`);
+  mapHintEl.style.setProperty("--hint2-radius", `${dropHighlightRadius}px`);
+  const dropCutout = roundedRectPath(
+    dropX,
+    dropY,
+    dropW,
+    dropH,
+    dropHighlightRadius
+  );
+  if (mapHintOutlineSecondary) {
+    mapHintOutlineSecondary.setAttribute("x", `${dropX}`);
+    mapHintOutlineSecondary.setAttribute("y", `${dropY}`);
+    mapHintOutlineSecondary.setAttribute("width", `${dropW}`);
+    mapHintOutlineSecondary.setAttribute("height", `${dropH}`);
+    mapHintOutlineSecondary.setAttribute("rx", `${dropHighlightRadius}`);
+    mapHintOutlineSecondary.setAttribute("ry", `${dropHighlightRadius}`);
   }
+
+  positionHintTooltip(mapHintTipPrimaryEl, dropRect, 12, viewportW, viewportH);
+  positionHintTooltip(mapHintTipSecondaryEl, btnRect, 12, viewportW, viewportH);
 
   if (mapHintScrimPath) {
     const base = `M0 0H${viewportW}V${viewportH}H0Z`;
-    mapHintScrimPath.setAttribute("d", `${base}${primaryCutout}${secondaryCutout}`);
+    mapHintScrimPath.setAttribute("d", `${base}${dropCutout}${buttonCutout}`);
   }
 }
 
@@ -1602,7 +1679,7 @@ function movePageById(pageId, nextIndex) {
 function addPageAtCenter() {
   if (!mapInstance || !ensureProjectionForManualPages()) {
     setStatus("Kortet er ikke klar endnu.");
-    return;
+    return false;
   }
   const center = mapInstance.getCenter();
   const [centerX, centerY] = transformerState.transformer.forward([
@@ -1650,6 +1727,7 @@ function addPageAtCenter() {
   }
   updateSelectionBar();
   markLayoutCustomized("Ny side tilføjet.");
+  return true;
 }
 
 function minMax(values) {
@@ -3123,7 +3201,7 @@ async function handleFileSelection(file) {
   selectedFile = file;
   cachedPoints = null;
   projectionState = null;
-  renderBtn.textContent = "Generér kort-PDF";
+  renderBtn.textContent = "Lav PDF";
   clearDownload();
   resetLayoutState();
   setStatus("Læser GPX...");
@@ -3157,6 +3235,7 @@ async function handleFileSelection(file) {
     setStatus("GPX indlæst. Layout beregnes...");
     updateRenderButtonState();
     generateLayout();
+    showAutoLayoutToast(layoutPages.length);
     const nextFocus = document.querySelector("[data-paper=\"A4\"]");
     if (nextFocus) nextFocus.focus();
   } catch (error) {
@@ -3216,23 +3295,41 @@ if (removePageBtn) {
   });
 }
 
+if (mapToastCloseEl) {
+  mapToastCloseEl.addEventListener("click", (event) => {
+    event.stopPropagation();
+    hideMapToast();
+  });
+}
+
 if (addPageBtn) {
   addPageBtn.addEventListener("click", (event) => {
     event.stopPropagation();
+    if (mapHintEl && !mapHintEl.classList.contains("hidden")) {
+      dismissMapHint();
+    }
+    let pendingToast = false;
     if (mapInstance) {
       const targetZoom = 10;
       if (mapInstance.getZoom() < targetZoom) {
+        pendingToast = true;
+        mapInstance.once("moveend", () => {
+          showManualLayoutToast();
+        });
         mapInstance.flyTo(mapInstance.getCenter(), targetZoom, {
           animate: true,
           duration: 0.8,
         });
       }
     }
-    addPageAtCenter();
+    const didAddPage = addPageAtCenter();
     if (renderBtn && layoutPages.length) {
       renderBtn.disabled = false;
       renderBtn.classList.add("ready");
       renderBtn.removeAttribute("disabled");
+    }
+    if (didAddPage && !pendingToast) {
+      showManualLayoutToast();
     }
   });
 }
@@ -3513,7 +3610,7 @@ controlsForm.addEventListener("submit", async (event) => {
     setProgress(3, [1, 2, 3]);
     setStatus("PDF klar.");
     setRenderProgress(0, 1, false);
-    renderBtn.textContent = "Generér kort-PDF igen";
+    renderBtn.textContent = "Lav PDF igen";
     renderBtn.classList.add("ready");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
