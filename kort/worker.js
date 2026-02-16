@@ -19,9 +19,18 @@ function utmZoneFromLon(lon) {
   return Math.floor((lon + 180) / 6) + 1;
 }
 
+function optimalNorwayEpsg(lon) {
+  if (lon < 12) return 25832;
+  if (lon < 24) return 25833;
+  return 25835;
+}
+
 function inferLocalEtrs89Utm(pointsLonLat) {
   const lons = pointsLonLat.map((p) => p[0]);
   const meanLon = lons.reduce((a, b) => a + b, 0) / lons.length;
+  if (meanLon >= 4 && meanLon <= 31.5) {
+    return optimalNorwayEpsg(meanLon);
+  }
   const zone = utmZoneFromLon(meanLon);
   return 25800 + zone;
 }

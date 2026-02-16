@@ -38,15 +38,39 @@
                 Tilføj side
               </button>
               <div id="selectionBar" class="selection-bar hidden">
+                <button type="button" id="insertPageBtn" class="chip" aria-label="Indsæt side">+</button>
+                <button type="button" id="orientationToggle" class="chip" aria-label="Skift orientering">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
+                    <path d="M21 3v5h-5"/>
+                  </svg>
+                </button>
                 <span class="selection-select-wrap">
                   <select id="selectionSelect" class="selection-select" aria-label="Vælg sidenummer"></select>
                 </span>
-                <button type="button" id="orientationToggle" class="chip">
-                  Skift orientering
+                <span class="bar-divider"></span>
+                <button type="button" id="lockToggleBtn" class="chip" aria-label="Lås/lås op side">
+                  <svg class="lock-icon-open" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect width="18" height="11" x="3" y="11" rx="2" ry="2"/>
+                    <path d="M7 11V7a5 5 0 0 1 9.9-1"/>
+                  </svg>
+                  <svg class="lock-icon-closed" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect width="18" height="11" x="3" y="11" rx="2" ry="2"/>
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                  </svg>
                 </button>
-                <button type="button" id="removePageBtn" class="chip danger">
-                  Fjern side
+                <button type="button" id="lockAllBtn" class="chip" aria-label="Lås alle sider" title="Lås alle sider">
+                  <svg class="lock-all-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <!-- Back padlock (dimmed) -->
+                    <rect width="12" height="7" x="10" y="7" rx="1.5" ry="1.5" opacity="0.45"/>
+                    <path d="M13 7V5.5a3 3 0 0 1 6 0V7" opacity="0.45"/>
+                    <!-- Front padlock -->
+                    <rect width="14" height="9" x="2" y="11" rx="2" ry="2"/>
+                    <path d="M5 11V8a4 4 0 0 1 8 0v3"/>
+                  </svg>
                 </button>
+                <span class="bar-divider"></span>
+                <button type="button" id="removePageBtn" class="chip danger" aria-label="Fjern side">✕</button>
               </div>
               <div class="map-toast" id="mapToast" role="status" aria-live="polite">
                 <span id="mapToastText"></span>
@@ -171,56 +195,105 @@
                 <div class="section-header">
                   <span>Kortlag</span>
                 </div>
-                <div class="section-grid">
-                  <label class="field">
-                    <span>Skiruter</span>
-                    <input type="checkbox" id="skiRoutesToggle" />
-                  </label>
-                  <label class="field">
-                    <span>Vandreruter</span>
-                    <input type="checkbox" id="hikeRoutesToggle" />
-                  </label>
-                  <label class="field">
-                    <span>Svækket is</span>
-                    <input type="checkbox" id="weakIceToggle" />
-                    <div class="weak-ice-opacity range-field hidden" id="weakIceOpacityGroup">
-                      <span>Gennemsigtighed</span>
-                      <div class="range-row">
-                        <input
-                          type="range"
-                          id="weakIceOpacity"
-                          min="0.1"
-                          max="1"
-                          step="0.05"
-                          value="0.8"
-                        />
-                        <output id="weakIceOpacityValue" for="weakIceOpacity">80%</output>
+                <div class="overlay-tabs" role="tablist" aria-label="Country overlays">
+                  <button type="button" class="overlay-tab active" data-country="no" role="tab" aria-selected="true">Norge</button>
+                  <button type="button" class="overlay-tab" data-country="se" role="tab" aria-selected="false">Sverige</button>
+                  <button type="button" class="overlay-tab" data-country="fi" role="tab" aria-selected="false">Suomi</button>
+                </div>
+                <div class="overlay-content active" data-country="no" role="tabpanel">
+                  <div class="section-grid">
+                    <label class="field">
+                      <span>
+                        Skiruter
+                        <span
+                          class="tooltip"
+                          data-tooltip="Viser skiruter som blå linjer på kortet."
+                          aria-label="Viser skiruter som blå linjer på kortet."
+                        >?</span>
+                      </span>
+                      <input type="checkbox" id="skiRoutesToggle" />
+                    </label>
+                    <label class="field">
+                      <span>
+                        Vandreruter
+                        <span
+                          class="tooltip"
+                          data-tooltip="Viser vandreruter som røde linjer på kortet."
+                          aria-label="Viser vandreruter som røde linjer på kortet."
+                        >?</span>
+                      </span>
+                      <input type="checkbox" id="hikeRoutesToggle" />
+                    </label>
+                    <label class="field">
+                      <span>
+                        Svakket is
+                        <span
+                          class="tooltip"
+                          data-tooltip="Markerer områder med potentielt svag is i rødt."
+                          aria-label="Markerer områder med potentielt svag is i rødt."
+                        >?</span>
+                      </span>
+                      <input type="checkbox" id="weakIceToggle" />
+                      <div class="weak-ice-opacity range-field hidden" id="weakIceOpacityGroup">
+                        <span>Gennemsigtighed</span>
+                        <div class="range-row">
+                          <input
+                            type="range"
+                            id="weakIceOpacity"
+                            min="0.1"
+                            max="1"
+                            step="0.05"
+                            value="0.8"
+                          />
+                          <output id="weakIceOpacityValue" for="weakIceOpacity">80%</output>
+                        </div>
                       </div>
-                    </div>
-                  </label>
-                  <label class="field">
-                    <span>Hældning</span>
-                    <input
-                      type="checkbox"
-                      id="heightSlopeToggle"
-                      class="height-layer-toggle"
-                      data-height-layer="DTM:helning_grader"
-                    />
-                    <div class="height-opacity range-field hidden" id="heightOpacityGroup">
-                      <span>Gennemsigtighed</span>
-                      <div class="range-row">
-                        <input
-                          type="range"
-                          id="heightOpacity"
-                          min="0.1"
-                          max="1"
-                          step="0.05"
-                          value="0.2"
-                        />
-                        <output id="heightOpacityValue" for="heightOpacity">20%</output>
+                    </label>
+                    <label class="field">
+                      <span>
+                        Helling
+                        <span
+                          class="tooltip"
+                          data-tooltip="Markerer stejle hældninger i rødt. Ses tydeligst ved høje zoomniveauer."
+                          aria-label="Markerer stejle hældninger i rødt. Ses tydeligst ved høje zoomniveauer."
+                        >?</span>
+                      </span>
+                      <input
+                        type="checkbox"
+                        id="heightSlopeToggle"
+                        class="height-layer-toggle"
+                        data-height-layer="DTM:helning_grader"
+                      />
+                      <div class="height-opacity range-field hidden" id="heightOpacityGroup">
+                        <span>Gennemsigtighed</span>
+                        <div class="range-row">
+                          <input
+                            type="range"
+                            id="heightOpacity"
+                            min="0.1"
+                            max="1"
+                            step="0.05"
+                            value="0.2"
+                          />
+                          <output id="heightOpacityValue" for="heightOpacity">20%</output>
+                        </div>
                       </div>
-                    </div>
-                  </label>
+                    </label>
+                  </div>
+                </div>
+                <div class="overlay-content" data-country="se" role="tabpanel">
+                  <div class="section-grid">
+                    <p class="overlay-placeholder">Svenske kortlag kommer snart.</p>
+                  </div>
+                </div>
+                <div class="overlay-content" data-country="fi" role="tabpanel">
+                  <div class="section-grid">
+                    <p class="overlay-placeholder">Finske kortlag kommer snart.</p>
+                  </div>
+                </div>
+                <div class="scale-warning hidden" id="scaleWarning">
+                  <span class="warning-icon">!</span>
+                  <span class="warning-text">Svenske kort kan vise reduceret detalje ved 1:25.000 pga. kildeoplosning.</span>
                 </div>
               </div>
 
@@ -352,19 +425,56 @@
             </form>
           </section>
 
+          <div class="control-section info-section">
+            <details class="advanced">
+              <summary>Om kortene</summary>
+              <table class="source-table">
+                <thead>
+                  <tr>
+                    <th>Land</th>
+                    <th>Ækvidistance</th>
+                    <th>Maks detalje</th>
+                    <th>Tegnforklaring</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Norge</td>
+                    <td>20 m</td>
+                    <td>1:25 000</td>
+                    <td><a href="data/norge_tegnforklaring.pdf" target="_blank" rel="noopener">PDF ↗</a></td>
+                  </tr>
+                  <tr>
+                    <td>Sverige</td>
+                    <td>10 m</td>
+                    <td>1:50 000</td>
+                    <td><a href="https://www.lantmateriet.se/globalassets/geodata/geodatatjanster/tf_twk.pdf" target="_blank" rel="noopener">PDF ↗</a></td>
+                  </tr>
+                  <tr>
+                    <td>Finland</td>
+                    <td>5 m</td>
+                    <td>1:25 000</td>
+                    <td><a href="https://www.maanmittauslaitos.fi/sites/maanmittauslaitos.fi/files/attachments/2025/09/maastokartta_karttamerkkien_selite_2025.pdf" target="_blank" rel="noopener">PDF ↗</a></td>
+                  </tr>
+                </tbody>
+              </table>
+              <p class="info-note">Maks detalje angiver den mindste skala, der giver skarpt print ved 300 DPI.</p>
+            </details>
+          </div>
+
           <footer class="sidebar-footer">
             <div class="sidebar-footer-title">Kortdata og licens</div>
             <table class="source-table">
               <thead>
                 <tr>
-                  <th>Kortlag</th>
+                  <th>Land</th>
                   <th>Udbyder</th>
                   <th>Licens</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td>WMTS basiskort (toporaster)</td>
+                  <td>Norge (basiskort)</td>
                   <td>Kartverket</td>
                   <td>
                     <a
@@ -377,8 +487,8 @@
                   </td>
                 </tr>
                 <tr>
-                  <td>UTM-rutenett (WMS)</td>
-                  <td>Kartverket / GeoNorge</td>
+                  <td>Sverige (topowebb)</td>
+                  <td>Lantmateriet</td>
                   <td>
                     <a
                       href="https://creativecommons.org/licenses/by/4.0/"
@@ -390,8 +500,8 @@
                   </td>
                 </tr>
                 <tr>
-                  <td>Tur- og friluftsruter (WMS)</td>
-                  <td>Kartverket / GeoNorge</td>
+                  <td>Finland (maastokartta)</td>
+                  <td>Maanmittauslaitos</td>
                   <td>
                     <a
                       href="https://creativecommons.org/licenses/by/4.0/"
@@ -403,28 +513,15 @@
                   </td>
                 </tr>
                 <tr>
-                  <td>Højde/DTM (WMS)</td>
-                  <td>Kartverket / GeoNorge</td>
+                  <td>Norge overlays</td>
+                  <td>Kartverket / GeoNorge / NVE</td>
                   <td>
                     <a
                       href="https://creativecommons.org/licenses/by/4.0/"
                       target="_blank"
                       rel="noopener"
                     >
-                      CC BY 4.0
-                    </a>
-                  </td>
-                </tr>
-                <tr>
-                  <td>Svækket is (WMS)</td>
-                  <td>NVE</td>
-                  <td>
-                    <a
-                      href="https://data.norge.no/nlod/en/2.0"
-                      target="_blank"
-                      rel="noopener"
-                    >
-                      NLOD 2.0
+                      CC BY 4.0 / NLOD 2.0
                     </a>
                   </td>
                 </tr>
