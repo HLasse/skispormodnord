@@ -1,42 +1,41 @@
 import proj4 from "https://cdn.jsdelivr.net/npm/proj4@2.9.0/+esm";
 import geomagnetism from "https://cdn.jsdelivr.net/npm/geomagnetism@0.2.0/+esm";
 import { PDFDocument } from "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/+esm";
+import { PROVIDERS, getLeafletTileUrl, getWmsConfig, getMaxZoom, getMinMaxZoom, getCombinedAttribution } from "./providers/config.js";
+import { createCompositeTileLayer } from "./layers/composite-tile-layer.js";
+import { getTileProviders, getPrimaryProvider, preloadBorders } from "./providers/borders.js";
 
 const L = window.L;
 
-const WMS_GRID_URL = "https://wms.geonorge.no/skwms1/wms.rutenett";
-const WMS_ROUTE_URL = "https://wms.geonorge.no/skwms1/wms.friluftsruter2";
-const WMS_HEIGHT_URL = "https://wms.geonorge.no/skwms1/wms.hoyde-dtm";
-const WMS_WEAK_ICE_URL =
-  "https://kart.nve.no/enterprise/services/SvekketIs1/MapServer/WMSServer";
-const WMS_ROUTE_LAYERS = {
-  ski: "Skiloype",
-  hike: "Fotrute",
-};
-const WMS_WEAK_ICE_LAYERS = [
-  "SvekketIs",
-  "SvekketIsElv",
-  "SvekketIsIkkeVurdert",
-  "OppsprukketIsLangsLand",
-];
+// Default provider for WMS overlays and fallback when no border polygon matches
+const CURRENT_PROVIDER = "no";
 
-// Kartverket cache (WMTS/XYZ-style REST endpoints)
-// Capabilities are documented here: https://cache.kartverket.no/
-const WMTS_CAPABILITIES_URL =
-  "https://cache.kartverket.no/v1/wmts/1.0.0/WMTSCapabilities.xml";
-const WMTS_BASE_URL = "https://cache.kartverket.no/v1/wmts/1.0.0";
-const MAP_TILE_MATRIX_SET = "webmercator";
+// Get WMS configuration from provider
+const noWmsConfig = PROVIDERS.no.wms;
+const WMS_ROUTE_URL = noWmsConfig.routes.url;
+const WMS_HEIGHT_URL = noWmsConfig.height.url;
+const WMS_WEAK_ICE_URL = noWmsConfig.weakIce.url;
+const WMS_ROUTE_LAYERS = noWmsConfig.routes.layers;
+const WMS_WEAK_ICE_LAYERS = noWmsConfig.weakIce.layers;
 
-// "toporaster" is Kartverket's topo raster/turkart layer.
-// Other layers: topo, topograatone, sjokartraster.
-const DEFAULT_LAYER = "toporaster";
-const GRID_LAYER = "1km_rutelinje";
-const MAP_TILE_URL = `${WMTS_BASE_URL}/${DEFAULT_LAYER}/default/${MAP_TILE_MATRIX_SET}/{z}/{y}/{x}.png`;
-const MAP_ATTRIBUTION = "&copy; Kartverket";
+// WMTS configuration from provider
+const noWmtsConfig = PROVIDERS.no.wmts;
+const WMTS_CAPABILITIES_URL = noWmtsConfig.capabilitiesUrl;
+const WMTS_BASE_URL = noWmtsConfig.baseUrl;
+const MAP_TILE_MATRIX_SET = noWmtsConfig.matrixSet;
+const DEFAULT_LAYER = noWmtsConfig.defaultLayer;
+const MAP_TILE_URL = getLeafletTileUrl(CURRENT_PROVIDER);
+const MAP_ATTRIBUTION = PROVIDERS.no.attribution;
 
 // For PDF export, WMTS requires stitching many tiles. If a page would require
 // too many tiles at the highest zoom, we automatically step down.
 const WMTS_MAX_TILES_PER_PAGE = 120;
+// Border pages use WebMercator for all providers (for proper clip alignment).
+// At high latitudes, WebMercator needs ~4x more tiles than UTM for equivalent
+// map detail because tiles cover less ground. Allow a higher budget so Norway
+// can reach zoom 15 (scaleDenom ~17k) instead of being capped at zoom 14
+// (scaleDenom ~34k, which renders 1.8x less map detail).
+const WMTS_MAX_TILES_BORDER_PAGE = 500;
 const WMTS_TILE_SIZE = 256;
 const ROUTE_OVERLAY_OPACITY = 1;
 const DEFAULT_HEIGHT_OVERLAY_OPACITY = 0.2;
@@ -60,6 +59,7 @@ const DEFAULT_TRACK_OPACITY = 0.8;
 const TRACK_STROKE_PX = 4;
 const PAGE_RENDER_CONCURRENCY = 4;
 const LARGE_FILE_THRESHOLD = 1024 * 1024;
+const MAX_GPX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
 const PAGE_STYLE = {
   color: "#1e1b16",
   weight: 2,
@@ -105,6 +105,8 @@ const selectionBarEl = document.getElementById("selectionBar");
 const selectionSelectEl = document.getElementById("selectionSelect");
 const orientationToggleEl = document.getElementById("orientationToggle");
 const removePageBtn = document.getElementById("removePageBtn");
+const lockToggleBtn = document.getElementById("lockToggleBtn");
+const lockAllBtn = document.getElementById("lockAllBtn");
 const addPageBtn = document.getElementById("addPageBtn");
 const colorPickerEl = document.getElementById("colorPicker");
 const sidebarEl = document.getElementById("sidebar");
@@ -139,6 +141,9 @@ const pdfJpegToggleEl = document.getElementById("pdfJpegToggle");
 const jpegQualityGroupEl = document.getElementById("jpegQualityGroup");
 const jpegQualityEl = document.getElementById("jpegQuality");
 const jpegQualityValueEl = document.getElementById("jpegQualityValue");
+const overlayTabsEl = document.querySelectorAll(".overlay-tab");
+const overlayContentsEl = document.querySelectorAll(".overlay-content");
+const scaleWarningEl = document.getElementById("scaleWarning");
 const MAP_HINT_SESSION_KEY = "gpx_map_hint_dismissed";
 const MAP_TOAST_AUTO_KEY = "gpx_map_toast_auto_shown";
 const MAP_TOAST_MANUAL_KEY = "gpx_map_toast_manual_shown";
@@ -178,6 +183,7 @@ let downloadUrl = null;
 let dragState = null;
 let dragListenersActive = false;
 let nextPageId = 1;
+let globalLockAll = false;
 let confirmResolver = null;
 let gpxWorker = null;
 let gpxWorkerRequestId = 0;
@@ -460,6 +466,7 @@ function resetLayoutState() {
   isLayoutReady = false;
   hasManualEdits = false;
   selectedPageIndex = null;
+  globalLockAll = false;
   pageColors = [];
   heightOverlayBounds = null;
   refreshHeightOverlays();
@@ -498,14 +505,26 @@ function setupSegmentedControls() {
     if (!button) return;
     const nextPaper = button.dataset.paper;
     if (nextPaper === selections.paper) return;
-    if (!(await confirmOverrideManualEdits())) {
-      setSegmentedActive(paperGroup, selections.paper, "paper");
-      return;
+    if (cachedPoints) {
+      if (!(await confirmOverrideManualEdits())) {
+        setSegmentedActive(paperGroup, selections.paper, "paper");
+        return;
+      }
+    } else if (layoutPages.length) {
+      const ok = await showConfirmModal(
+        "Papirstørrelsen ændres for alle sider. Siderne vil dække et andet område end før. Vil du fortsætte?"
+      );
+      if (!ok) {
+        setSegmentedActive(paperGroup, selections.paper, "paper");
+        return;
+      }
     }
     selections.paper = nextPaper;
     setSegmentedActive(paperGroup, selections.paper, "paper");
     if (cachedPoints) {
       generateLayout("Papirstørrelsen er ændret. Layout opdateres...");
+    } else if (layoutPages.length) {
+      resizeManualPagesInPlace();
     }
   });
 
@@ -514,14 +533,27 @@ function setupSegmentedControls() {
     if (!button) return;
     const nextScale = Number(button.dataset.scale);
     if (nextScale === selections.scale) return;
-    if (!(await confirmOverrideManualEdits())) {
-      setSegmentedActive(scaleGroup, String(selections.scale), "scale");
-      return;
+    if (cachedPoints) {
+      if (!(await confirmOverrideManualEdits())) {
+        setSegmentedActive(scaleGroup, String(selections.scale), "scale");
+        return;
+      }
+    } else if (layoutPages.length) {
+      const ok = await showConfirmModal(
+        "Målestokken ændres for alle sider. Siderne vil dække et andet område end før. Vil du fortsætte?"
+      );
+      if (!ok) {
+        setSegmentedActive(scaleGroup, String(selections.scale), "scale");
+        return;
+      }
     }
     selections.scale = nextScale;
     setSegmentedActive(scaleGroup, String(selections.scale), "scale");
+    updateScaleWarning();
     if (cachedPoints) {
       generateLayout("Målestokken er ændret. Layout opdateres...");
+    } else if (layoutPages.length) {
+      resizeManualPagesInPlace();
     }
   });
 
@@ -530,13 +562,15 @@ function setupSegmentedControls() {
     if (!button) return;
     const nextOrientation = button.dataset.orientation;
     if (nextOrientation === selections.orientation) return;
-    if (!(await confirmOverrideManualEdits())) {
-      setSegmentedActive(
-        orientationGroup,
-        String(selections.orientation),
-        "orientation"
-      );
-      return;
+    if (cachedPoints) {
+      if (!(await confirmOverrideManualEdits())) {
+        setSegmentedActive(
+          orientationGroup,
+          String(selections.orientation),
+          "orientation"
+        );
+        return;
+      }
     }
     selections.orientation = nextOrientation;
     setSegmentedActive(
@@ -753,6 +787,11 @@ function utmZoneFromLon(lon) {
 function inferLocalEtrs89Utm(pointsLonLat) {
   const lons = pointsLonLat.map((p) => p[0]);
   const meanLon = lons.reduce((a, b) => a + b, 0) / lons.length;
+  // If in Norway/Nordic longitude range (4°–31.5°E), snap to Kartverket's
+  // available zones (32/33/35) so tiles and grid share the same UTM zone.
+  if (meanLon >= 4 && meanLon <= 31.5) {
+    return optimalNorwayEpsg(meanLon);
+  }
   const zone = utmZoneFromLon(meanLon);
   return 25800 + zone;
 }
@@ -1231,9 +1270,10 @@ function initMap() {
     L.DomEvent.disableClickPropagation(selectionBarEl);
     L.DomEvent.disableScrollPropagation(selectionBarEl);
   }
-  L.tileLayer(MAP_TILE_URL, {
-    maxZoom: 18,
-    attribution: MAP_ATTRIBUTION,
+  // Use composite tile layer for multi-country support
+  // Falls back to Norway for areas outside border polygons
+  createCompositeTileLayer({
+    defaultProvider: CURRENT_PROVIDER,
   }).addTo(mapInstance);
   mapInstance.setView([64.5, 11.0], 5);
 
@@ -1378,11 +1418,13 @@ function renderPageOverlays() {
       className: "page-rect",
     });
     rect.on("mousedown", (event) => {
+      if (layoutPages[index]?.locked) return;
       L.DomEvent.stop(event);
       startDrag(event, index);
       selectPage(index, getContainerPointFromEvent(event));
     });
     rect.on("touchstart", (event) => {
+      if (layoutPages[index]?.locked) return;
       L.DomEvent.stop(event);
       startDrag(event, index);
       selectPage(index, getContainerPointFromEvent(event));
@@ -1402,7 +1444,6 @@ function renderPageOverlays() {
   });
 
   updatePageStyles();
-  fitMapToLayout();
 }
 
 function fitMapToLayout() {
@@ -1422,13 +1463,14 @@ function updatePageStyles() {
     const baseStyle =
       index === selectedPageIndex ? PAGE_STYLE_SELECTED : PAGE_STYLE;
     const fillColor = pageColors[index] ?? PAGE_FILL_COLOR;
-    layer.setStyle({ ...baseStyle, fillColor });
+    const isLocked = !!layoutPages[index]?.locked;
+    layer.setStyle({ ...baseStyle, fillColor, dashArray: isLocked ? "8 4" : null });
     if (index === selectedPageIndex) {
       layer.bringToFront();
     }
   });
   pageLabelLayers.forEach((layer, index) => {
-    if (index === selectedPageIndex) {
+    if (index === selectedPageIndex && layer.bringToFront) {
       layer.bringToFront();
     }
   });
@@ -1478,10 +1520,14 @@ function updateSelectionBar(anchorPoint) {
     if (i === selectedPageIndex + 1) opt.selected = true;
     selectionSelectEl.appendChild(opt);
   }
-  const nextOrientation = page.orientation === "portrait" ? "Landskab" : "Portræt";
-  orientationToggleEl.textContent = `Skift til ${nextOrientation}`;
   if (removePageBtn) {
     removePageBtn.classList.toggle("hidden", selectedPageIndex === null);
+  }
+  if (lockToggleBtn) {
+    lockToggleBtn.classList.toggle("lock-active", !!page.locked);
+  }
+  if (lockAllBtn) {
+    lockAllBtn.classList.toggle("lock-active", globalLockAll);
   }
 
   if (!selectionMarker) {
@@ -1648,6 +1694,20 @@ function ensureProjectionForManualPages() {
   return true;
 }
 
+function toggleSelectedLock() {
+  if (selectedPageIndex === null || !layoutPages[selectedPageIndex]) return;
+  layoutPages[selectedPageIndex].locked = !layoutPages[selectedPageIndex].locked;
+  updatePageStyles();
+  updateSelectionBar();
+}
+
+function toggleLockAll() {
+  globalLockAll = !globalLockAll;
+  layoutPages.forEach((page) => { page.locked = globalLockAll; });
+  updatePageStyles();
+  updateSelectionBar();
+}
+
 function removePage(index) {
   if (index === null || index === undefined) return;
   if (!layoutPages[index]) return;
@@ -1730,6 +1790,78 @@ function addPageAtCenter() {
   return true;
 }
 
+function resizeManualPagesInPlace() {
+  if (!layoutPages.length) return;
+  for (let i = 0; i < layoutPages.length; i++) {
+    const page = layoutPages[i];
+    const metrics = pageGroundSpan(
+      selections.scale,
+      DEFAULT_DPI,
+      selections.paper,
+      page.orientation
+    );
+    const [minx, miny, maxx, maxy] = page.bbox;
+    const cx = (minx + maxx) / 2;
+    const cy = (miny + maxy) / 2;
+    layoutPages[i] = {
+      ...page,
+      bbox: bboxFromCenter(cx, cy, metrics.wM, metrics.hM),
+      wPx: metrics.wPx,
+      hPx: metrics.hPx,
+      wM: metrics.wM,
+      hM: metrics.hM,
+    };
+  }
+  clearDownload();
+  renderPageOverlays();
+  updateSelectionBar();
+  const nextHeightBounds = computeHeightOverlayBounds();
+  if (!boundsEqual(heightOverlayBounds, nextHeightBounds)) {
+    heightOverlayBounds = nextHeightBounds;
+    refreshHeightOverlays();
+  }
+}
+
+function addPageToRight(sourceIndex) {
+  const source = layoutPages[sourceIndex];
+  if (!source) return false;
+
+  const [minx, miny, maxx, maxy] = source.bbox;
+  const cx = (minx + maxx) / 2;
+  const cy = (miny + maxy) / 2;
+  const overlap = DEFAULT_OVERLAP;
+  const shiftX = source.wM * (1 - overlap);
+  const newCx = cx + shiftX;
+  const newBBox = bboxFromCenter(newCx, cy, source.wM, source.hM);
+
+  const newPage = {
+    id: nextPageId,
+    bbox: newBBox,
+    orientation: source.orientation,
+    wPx: source.wPx,
+    hPx: source.hPx,
+    wM: source.wM,
+    hM: source.hM,
+  };
+  nextPageId += 1;
+
+  const insertIndex = sourceIndex + 1;
+  layoutPages.splice(insertIndex, 0, newPage);
+  selectedPageIndex = insertIndex;
+
+  isLayoutReady = true;
+  if (renderBtn) {
+    renderBtn.disabled = false;
+    renderBtn.classList.add("ready");
+    renderBtn.removeAttribute("disabled");
+  }
+  renderPageOverlays();
+  updateRenderButtonState();
+  updateSelectionBar();
+  markLayoutCustomized("Ny side tilføjet.");
+  return true;
+}
+
 function minMax(values) {
   let min = Infinity;
   let max = -Infinity;
@@ -1797,6 +1929,19 @@ function bboxFromCenter(cx, cy, wM, hM) {
 
 function pointInBBox(x, y, bbox) {
   return x >= bbox[0] && x <= bbox[2] && y >= bbox[1] && y <= bbox[3];
+}
+
+function segmentIntersectsBBox(x1, y1, x2, y2, bbox) {
+  const [minx, miny, maxx, maxy] = bbox;
+  if (pointInBBox(x1, y1, bbox) || pointInBBox(x2, y2, bbox)) return true;
+  let t0 = 0, t1 = 1;
+  const dx = x2 - x1, dy = y2 - y1;
+  const clips = [[-dx, x1 - minx], [dx, maxx - x1], [-dy, y1 - miny], [dy, maxy - y1]];
+  for (const [p, q] of clips) {
+    if (Math.abs(p) < 1e-10) { if (q < 0) return false; }
+    else { const r = q / p; if (p < 0) { if (r > t1) return false; if (r > t0) t0 = r; } else { if (r < t0) return false; if (r < t1) t1 = r; } }
+  }
+  return t0 <= t1;
 }
 
 function shrinkBBox(bbox, marginX, marginY) {
@@ -2346,13 +2491,49 @@ async function fetchWmsImage({ baseUrl, layer, styles, format, transparent }, bb
 
 const wmtsConfigCache = new Map();
 
-function tileMatrixSetIdFromEpsg(epsgCode) {
-  // Kartverket cache supports: webmercator, utm32n, utm33n, utm35n
-  if (epsgCode === 25832) return "utm32n";
-  if (epsgCode === 25833) return "utm33n";
-  if (epsgCode === 25835) return "utm35n";
-  // Fallback: use webmercator if someone ends up outside those zones.
-  return "webmercator";
+function tileMatrixSetIdFromEpsg(epsgCode, providerId = CURRENT_PROVIDER) {
+  // Get UTM matrix set from provider config
+  const provider = PROVIDERS[providerId];
+  if (provider?.wmts?.utmMatrixSets?.[epsgCode]) {
+    return provider.wmts.utmMatrixSets[epsgCode];
+  }
+  // Fallback: use provider's default matrix set
+  return provider?.wmts?.matrixSet || "webmercator";
+}
+
+/**
+ * Determine the best UTM EPSG code for Norway based on longitude.
+ * Kartverket provides tile matrix sets for zones 32, 33, and 35 only.
+ */
+function optimalNorwayEpsg(lon) {
+  if (lon < 12) return 25832;
+  if (lon < 24) return 25833;
+  return 25835;
+}
+
+/**
+ * Reproject a UTM bbox from one zone to another.
+ */
+function reprojectUtmBbox(bbox, fromEpsg, toEpsg) {
+  if (fromEpsg === toEpsg) return bbox;
+  const fromZone = fromEpsg - 25800;
+  const toZone = toEpsg - 25800;
+  const fromDef = `+proj=utm +zone=${fromZone} +ellps=GRS80 +units=m +no_defs`;
+  const toDef = `+proj=utm +zone=${toZone} +ellps=GRS80 +units=m +no_defs`;
+  const transform = proj4(fromDef, toDef);
+  const [minX, minY, maxX, maxY] = bbox;
+  const corners = [
+    transform.forward([minX, minY]),
+    transform.forward([minX, maxY]),
+    transform.forward([maxX, minY]),
+    transform.forward([maxX, maxY]),
+  ];
+  return [
+    Math.min(...corners.map(c => c[0])),
+    Math.min(...corners.map(c => c[1])),
+    Math.max(...corners.map(c => c[0])),
+    Math.max(...corners.map(c => c[1])),
+  ];
 }
 
 function textContentOrNull(el, selector) {
@@ -2423,10 +2604,9 @@ function metersPerPixelFromScaleDenominator(scaleDenominator) {
   return scaleDenominator * 0.00028;
 }
 
-function chooseBestMatrix(matrices, desiredMPerPx, maxTiles) {
-  // Start with the most zoomed-in matrix (smallest m/px) that still makes sense.
-  // If it would require too many tiles for the requested bbox/output, step down.
-  // We pick the highest detail with m/px <= desiredMPerPx if possible; otherwise the closest.
+function chooseBestMatrix(matrices, desiredMPerPx) {
+  // Pick the matrix with resolution closest to desiredMPerPx.
+  // Callers handle tile count capping separately after this returns.
 
   // First pick by resolution
   let chosen = matrices[0];
@@ -2473,99 +2653,708 @@ function tileRangeForBBox(bbox, matrix) {
   };
 }
 
+// Session-scoped tile cache for PDF generation.
+// Caches Promise<ImageBitmap> so concurrent requests for the same tile
+// reuse a single in-flight fetch. Cleared after each PDF render.
+let _tileBitmapCache = null;
+
+function enableTileCache() {
+  _tileBitmapCache = new Map();
+}
+
+function clearTileCache() {
+  _tileBitmapCache = null;
+}
+
 async function fetchTileBitmap(url) {
+  if (_tileBitmapCache) {
+    const cached = _tileBitmapCache.get(url);
+    if (cached) return cached;
+    const promise = _fetchTileBitmapUncached(url);
+    _tileBitmapCache.set(url, promise);
+    // If the fetch fails, remove from cache so it can be retried
+    promise.catch(() => _tileBitmapCache?.delete(url));
+    return promise;
+  }
+  return _fetchTileBitmapUncached(url);
+}
+
+async function _fetchTileBitmapUncached(url) {
   const r = await fetch(url, { mode: "cors" });
   if (!r.ok) throw new Error(`WMTS tile fejlede (${r.status}).`);
   const b = await r.blob();
   return createImageBitmap(b);
 }
 
-async function fetchWmtsStitchedImage(bbox, widthPx, heightPx, epsgCode, layerId) {
-  const tileMatrixSetId = tileMatrixSetIdFromEpsg(epsgCode);
+/**
+ * Compute a 2D affine transform from 3 point correspondences.
+ * Given source points (src0, src1, src2) mapping to destination points (dst0, dst1, dst2),
+ * returns {a, b, c, d, e, f} suitable for ctx.setTransform(a, b, c, d, e, f).
+ */
+function computeAffineTransform(src0, src1, src2, dst0, dst1, dst2) {
+  // Solve: [dst] = [a c e; b d f; 0 0 1] * [src]
+  // From 3 point pairs we get 6 equations for 6 unknowns.
+  const [sx0, sy0] = src0;
+  const [sx1, sy1] = src1;
+  const [sx2, sy2] = src2;
+  const [dx0, dy0] = dst0;
+  const [dx1, dy1] = dst1;
+  const [dx2, dy2] = dst2;
+
+  const det = sx0 * (sy1 - sy2) - sx1 * (sy0 - sy2) + sx2 * (sy0 - sy1);
+  const invDet = 1 / det;
+
+  const a = ((dx0 * (sy1 - sy2) - dx1 * (sy0 - sy2) + dx2 * (sy0 - sy1)) * invDet);
+  const c = ((dx0 * (sx2 - sx1) + dx1 * (sx0 - sx2) + dx2 * (sx1 - sx0)) * invDet);  // maps to canvas c param
+  const e = ((dx0 * (sx1 * sy2 - sx2 * sy1) + dx1 * (sx2 * sy0 - sx0 * sy2) + dx2 * (sx0 * sy1 - sx1 * sy0)) * invDet);
+
+  const b = ((dy0 * (sy1 - sy2) - dy1 * (sy0 - sy2) + dy2 * (sy0 - sy1)) * invDet);
+  const d = ((dy0 * (sx2 - sx1) + dy1 * (sx0 - sx2) + dy2 * (sx1 - sx0)) * invDet);  // maps to canvas d param
+  const f = ((dy0 * (sx1 * sy2 - sx2 * sy1) + dy1 * (sx2 * sy0 - sx0 * sy2) + dy2 * (sx0 * sy1 - sx1 * sy0)) * invDet);
+
+  return { a, b, c, d, e, f };
+}
+
+/**
+ * Convert UTM bbox to WGS84 bbox for border detection.
+ * Converts all 4 corners to handle rotation between UTM and WGS84.
+ * @param {number[]} bbox - UTM bbox [minx, miny, maxx, maxy]
+ * @param {number} epsgCode - EPSG code for the UTM zone
+ * @returns {number[]} WGS84 bbox [minLon, minLat, maxLon, maxLat]
+ */
+function utmBboxToWgs84(bbox, epsgCode) {
+  const [minx, miny, maxx, maxy] = bbox;
+  const utmDef = `+proj=utm +zone=${epsgCode - 25800} +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs`;
+  const inverseTransform = proj4(utmDef, "EPSG:4326");
+  const corners = [
+    inverseTransform.forward([minx, miny]),
+    inverseTransform.forward([minx, maxy]),
+    inverseTransform.forward([maxx, miny]),
+    inverseTransform.forward([maxx, maxy]),
+  ];
+  return [
+    Math.min(...corners.map(c => c[0])),
+    Math.min(...corners.map(c => c[1])),
+    Math.max(...corners.map(c => c[0])),
+    Math.max(...corners.map(c => c[1])),
+  ];
+}
+
+/**
+ * Convert UTM bbox corners to WGS84, returning all 4 corners (not just AABB).
+ * Used for affine transform computation where the rotation matters.
+ */
+function utmBboxCornersToWgs84(bbox, epsgCode) {
+  const [minx, miny, maxx, maxy] = bbox;
+  const utmDef = `+proj=utm +zone=${epsgCode - 25800} +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs`;
+  const inv = proj4(utmDef, "EPSG:4326");
+  return {
+    tl: inv.forward([minx, maxy]),  // top-left (minX, maxY)
+    tr: inv.forward([maxx, maxy]),  // top-right (maxX, maxY)
+    bl: inv.forward([minx, miny]),  // bottom-left (minX, minY)
+    br: inv.forward([maxx, miny]),  // bottom-right (maxX, minY)
+  };
+}
+
+/**
+ * Get the tile URL for a specific provider.
+ * @param {string} providerId - Provider ID
+ * @param {string} layerId - Layer ID
+ * @param {string} tileMatrixSetId - Tile matrix set ID
+ * @param {string} matrixId - Matrix level ID
+ * @param {number} row - Tile row
+ * @param {number} col - Tile column
+ * @returns {string} Tile URL
+ * @throws {Error} If provider is unknown
+ */
+function getProviderTileUrl(providerId, layerId, tileMatrixSetId, matrixId, row, col) {
+  const provider = PROVIDERS[providerId];
+  if (!provider) {
+    throw new Error(`Unknown provider: ${providerId}`);
+  }
+
+  const layer = layerId || provider.wmts.defaultLayer;
+
+  if (provider.wmts.requiresProxy) {
+    // Use proxy URL
+    return provider.wmts.proxyUrl
+      .replace("{layer}", layer)
+      .replace("{z}", matrixId)
+      .replace("{y}", row)
+      .replace("{x}", col);
+  }
+
+  // Direct URL for Norway
+  return `${provider.wmts.baseUrl}/${layer}/default/${tileMatrixSetId}/${matrixId}/${row}/${col}.png`;
+}
+
+/**
+ * Fetch composite WMTS stitched image from multiple providers
+ * Detects which countries the bbox spans and composites appropriately
+ */
+async function fetchCompositeWmtsStitchedImage(bbox, widthPx, heightPx, epsgCode, layerId) {
+  // Convert UTM bbox to WGS84 for border detection
+  const wgs84Bbox = utmBboxToWgs84(bbox, epsgCode);
+
+  // Detect which providers this bbox intersects
+  let providers;
+  try {
+    providers = await getTileProviders(wgs84Bbox);
+  } catch (err) {
+    console.error("Border detection failed, using default provider:", err);
+    providers = [CURRENT_PROVIDER];
+  }
+  console.debug("[PDF] Detected providers:", { wgs84Bbox, providers });
+
+  // If no provider detected, fall back to default (Norway)
+  if (providers.length === 0) {
+    console.warn("[PDF] No provider detected for bbox, using default 'no'");
+    providers = [CURRENT_PROVIDER];
+  }
+
+  // Route all cases through the composite path (which handles white background)
+  // Single-provider optimization happens inside compositeProviderImages
+  // Use the minimum max zoom across all providers
+  const minMaxZoom = getMinMaxZoom(providers);
+
+  // Fetch from each provider and composite.
+  // On border pages (multiple providers), use WebMercator for ALL providers so every
+  // canvas shares the same projection. This ensures the Mercator-Y clip polygon aligns
+  // perfectly with every canvas. Single-provider pages keep the UTM path for Norway
+  // (best resolution) and the WebMercator path for SE/FI (via fetchWmtsStitchedImageForProvider).
+  const isMultiProvider = providers.length > 1;
+  const canvases = await Promise.all(
+    providers.map(async (providerId) => {
+      try {
+        if (isMultiProvider) {
+          return await fetchWebMercatorStitchedImageForProvider(
+            providerId,
+            bbox,
+            widthPx,
+            heightPx,
+            epsgCode,
+            layerId,
+            getMaxZoom(providerId),
+            WMTS_MAX_TILES_BORDER_PAGE
+          );
+        }
+        return await fetchWmtsStitchedImageForProvider(
+          providerId,
+          bbox,
+          widthPx,
+          heightPx,
+          epsgCode,
+          layerId,
+          minMaxZoom
+        );
+      } catch (err) {
+        console.warn(`Failed to fetch from provider ${providerId}:`, err);
+        // Only swallow error if there are other providers to fall back to
+        if (providers.length > 1) {
+          return null;
+        }
+        throw err; // Re-throw for single-provider - show error to user
+      }
+    })
+  );
+
+  // Safety check: if ALL providers failed, throw rather than rendering white
+  if (canvases.every(c => c === null)) {
+    throw new Error("Ingen kortfliser kunne hentes fra nogen udbyder.");
+  }
+
+  // Composite the canvases with border clipping
+  return compositeProviderImages(canvases, providers, bbox, epsgCode, widthPx, heightPx);
+}
+
+/**
+ * Fetch stitched image for a specific provider
+ */
+async function fetchWmtsStitchedImageForProvider(providerId, bbox, widthPx, heightPx, epsgCode, layerId, maxZoomLimit) {
+  const provider = PROVIDERS[providerId];
+  if (!provider) {
+    throw new Error(`Unknown provider: ${providerId}`);
+  }
+
+  // For non-Norway providers, we need to handle the case where they might not have
+  // the same UTM tile matrix sets. Fall back to webmercator approach.
+  if (providerId !== "no") {
+    return fetchWebMercatorStitchedImageForProvider(providerId, bbox, widthPx, heightPx, epsgCode, layerId, maxZoomLimit);
+  }
+
+  // Norway: determine optimal UTM zone for this page based on center longitude.
+  // The bbox may be in a different zone than optimal for this page location.
+  let tileBbox = bbox;
+  let tileEpsg = epsgCode;
+  const wgs84Center = utmBboxToWgs84(bbox, epsgCode);
+  const centerLon = (wgs84Center[0] + wgs84Center[2]) / 2;
+  const optimalEpsg = optimalNorwayEpsg(centerLon);
+
+  if (optimalEpsg !== epsgCode && PROVIDERS.no.wmts.utmMatrixSets[optimalEpsg]) {
+    tileBbox = reprojectUtmBbox(bbox, epsgCode, optimalEpsg);
+    tileEpsg = optimalEpsg;
+  }
+
+  const tileMatrixSetId = tileMatrixSetIdFromEpsg(tileEpsg, providerId);
+
+  // Norway uses UTM-based tile matrix sets
   const { matrices } = await getWmtsTileMatrixSet(tileMatrixSetId);
 
-  // Desired output resolution from bbox + output pixels
-  const desiredResX = (bbox[2] - bbox[0]) / widthPx;
-  const desiredResY = (bbox[3] - bbox[1]) / heightPx;
+  const desiredResX = (tileBbox[2] - tileBbox[0]) / widthPx;
+  const desiredResY = (tileBbox[3] - tileBbox[1]) / heightPx;
   const desiredMPerPx = Math.max(desiredResX, desiredResY);
 
-  const { startIndex } = chooseBestMatrix(matrices, desiredMPerPx, WMTS_MAX_TILES_PER_PAGE);
+  const { startIndex } = chooseBestMatrix(matrices, desiredMPerPx);
 
-  // Step down (less detailed) until tile count is acceptable
   let matrixIndex = startIndex;
-  let range = tileRangeForBBox(bbox, matrices[matrixIndex]);
+  let range = tileRangeForBBox(tileBbox, matrices[matrixIndex]);
   let tileCount = (range.maxCol - range.minCol + 1) * (range.maxRow - range.minRow + 1);
 
   while (tileCount > WMTS_MAX_TILES_PER_PAGE && matrixIndex < matrices.length - 1) {
-    matrixIndex += 1; // less detail -> fewer tiles
-    range = tileRangeForBBox(bbox, matrices[matrixIndex]);
+    matrixIndex += 1;
+    range = tileRangeForBBox(tileBbox, matrices[matrixIndex]);
     tileCount = (range.maxCol - range.minCol + 1) * (range.maxRow - range.minRow + 1);
   }
 
   const matrix = matrices[matrixIndex];
-
-  // Create a temporary canvas large enough for the full tile mosaic
   const cols = range.maxCol - range.minCol + 1;
   const rows = range.maxRow - range.minRow + 1;
-
   const mosaicW = cols * matrix.tileWidth;
   const mosaicH = rows * matrix.tileHeight;
 
   const mosaic = document.createElement("canvas");
   mosaic.width = mosaicW;
   mosaic.height = mosaicH;
-  const mctx = mosaic.getContext("2d");
+  const mctx = getContext2d(mosaic);
 
-  // Fetch tiles with simple concurrency limiting
   const tasks = [];
   for (let row = range.minRow; row <= range.maxRow; row += 1) {
     for (let col = range.minCol; col <= range.maxCol; col += 1) {
       const x = col - range.minCol;
       const y = row - range.minRow;
-      const url = `${WMTS_BASE_URL}/${layerId}/default/${tileMatrixSetId}/${matrix.id}/${row}/${col}.png`;
+      const url = getProviderTileUrl(providerId, layerId, tileMatrixSetId, matrix.id, row, col);
       tasks.push({ url, x, y });
     }
   }
 
   const concurrency = 8;
   let cursor = 0;
+  let failedCount = 0;
   const workers = Array.from({ length: concurrency }, async () => {
     while (cursor < tasks.length) {
       const i = cursor;
       cursor += 1;
       const t = tasks[i];
-      const bmp = await fetchTileBitmap(t.url);
-      mctx.drawImage(
-        bmp,
-        t.x * matrix.tileWidth,
-        t.y * matrix.tileHeight,
-        matrix.tileWidth,
-        matrix.tileHeight
-      );
+      try {
+        const bmp = await fetchTileBitmap(t.url);
+        mctx.drawImage(bmp, t.x * matrix.tileWidth, t.y * matrix.tileHeight, matrix.tileWidth, matrix.tileHeight);
+      } catch (err) {
+        failedCount += 1;
+        console.warn(`[PDF Norway] Failed to fetch tile ${failedCount}/${tasks.length}: ${t.url}`, err.message || err);
+        mctx.fillStyle = "#e0e0e0";
+        mctx.fillRect(t.x * matrix.tileWidth, t.y * matrix.tileHeight, matrix.tileWidth, matrix.tileHeight);
+      }
     }
   });
 
   await Promise.all(workers);
+  if (failedCount > 0) {
+    console.error(`[PDF Norway] ${failedCount}/${tasks.length} tiles failed for matrix ${matrix.id}`);
+  }
+  if (failedCount > tasks.length * 0.2) {
+    throw new Error(`Too many tile failures for Norway: ${failedCount}/${tasks.length} tiles failed. Check network connection.`);
+  }
+  console.debug(`[PDF Norway] Completed fetching ${tasks.length} tiles for matrix ${matrix.id}`);
 
-  // Crop the mosaic to exactly bbox and scale to requested output size.
+  // Convert tile-zone UTM coordinates to mosaic pixel coordinates
   const originX = matrix.topLeftCorner[0];
   const originY = matrix.topLeftCorner[1];
-
-  const cropXMap = bbox[0] - (originX + range.minCol * range.tileSpanX);
-  const cropYMap = (originY - range.minRow * range.tileSpanY) - bbox[3];
-
-  const cropX = cropXMap / range.res;
-  const cropY = cropYMap / range.res;
-  const cropW = (bbox[2] - bbox[0]) / range.res;
-  const cropH = (bbox[3] - bbox[1]) / range.res;
+  const mosaicOriginX = originX + range.minCol * range.tileSpanX;
+  const mosaicOriginY = originY - range.minRow * range.tileSpanY;
+  const utmToMosaicPx = ([ux, uy]) => [
+    (ux - mosaicOriginX) / range.res,
+    (mosaicOriginY - uy) / range.res,
+  ];
 
   const out = document.createElement("canvas");
   out.width = widthPx;
   out.height = heightPx;
-  const octx = out.getContext("2d");
-  octx.drawImage(mosaic, cropX, cropY, cropW, cropH, 0, 0, widthPx, heightPx);
+  const octx = getContext2d(out);
+  // Pre-fill with white so transparent/failed areas don't render black in PDF
+  octx.fillStyle = "#ffffff";
+  octx.fillRect(0, 0, widthPx, heightPx);
+
+  if (tileEpsg !== epsgCode) {
+    // Zone mismatch: the tile mosaic is in a different UTM zone than the page.
+    // Use affine transform to account for the rotation between zones.
+    const fromZone = epsgCode - 25800;
+    const toZone = tileEpsg - 25800;
+    const fromDef = `+proj=utm +zone=${fromZone} +ellps=GRS80 +units=m +no_defs`;
+    const toDef = `+proj=utm +zone=${toZone} +ellps=GRS80 +units=m +no_defs`;
+    const pageToTile = proj4(fromDef, toDef);
+
+    // Map page bbox corners to tile-zone UTM, then to mosaic pixels
+    const [minx, miny, maxx, maxy] = bbox;  // page-zone UTM
+    const mTL = utmToMosaicPx(pageToTile.forward([minx, maxy]));
+    const mTR = utmToMosaicPx(pageToTile.forward([maxx, maxy]));
+    const mBL = utmToMosaicPx(pageToTile.forward([minx, miny]));
+
+    const xf = computeAffineTransform(
+      mTL, mTR, mBL,
+      [0, 0], [widthPx, 0], [0, heightPx]
+    );
+
+    console.debug(`[PDF Norway] Zone mismatch affine (${epsgCode}→${tileEpsg}):`, xf);
+    octx.setTransform(xf.a, xf.b, xf.c, xf.d, xf.e, xf.f);
+    octx.drawImage(mosaic, 0, 0);
+    octx.setTransform(1, 0, 0, 1, 0, 0);
+  } else {
+    // Same zone: simple rectangular crop (no rotation needed)
+    const cropX = utmToMosaicPx([tileBbox[0], 0])[0];
+    const cropY = utmToMosaicPx([0, tileBbox[3]])[1];
+    const cropW = (tileBbox[2] - tileBbox[0]) / range.res;
+    const cropH = (tileBbox[3] - tileBbox[1]) / range.res;
+
+    console.debug(`[PDF Norway] Crop params:`, { cropX, cropY, cropW, cropH, widthPx, heightPx, mosaicW: mosaic.width, mosaicH: mosaic.height });
+    octx.drawImage(mosaic, cropX, cropY, cropW, cropH, 0, 0, widthPx, heightPx);
+  }
+
+  // Free mosaic pixel buffer
+  mosaic.width = 0;
+  mosaic.height = 0;
+
+  return out;
+}
+
+/**
+ * Fetch stitched image using WebMercator tiles for providers that don't have UTM
+ * This converts UTM bbox to WebMercator, fetches tiles, and reprojects
+ */
+async function fetchWebMercatorStitchedImageForProvider(providerId, bbox, widthPx, heightPx, epsgCode, layerId, maxZoomLimit, maxTiles) {
+  const provider = PROVIDERS[providerId];
+  // Always use provider's own default layer - Norway's "toporaster" doesn't exist on Sweden/Finland
+  const layer = provider.wmts.defaultLayer;
+
+  // Convert UTM bbox to WGS84
+  const wgs84Bbox = utmBboxToWgs84(bbox, epsgCode);
+  const [minLon, minLat, maxLon, maxLat] = wgs84Bbox;
+
+  // Calculate appropriate zoom level
+  const desiredResX = (bbox[2] - bbox[0]) / widthPx;
+  const desiredResY = (bbox[3] - bbox[1]) / heightPx;
+  const desiredMPerPx = Math.max(desiredResX, desiredResY);
+
+  // On border pages (maxTiles provided), skip latitude correction to get higher zoom.
+  // Map servers render tile content at the equatorial scale denominator, so at high
+  // latitudes the lat-corrected zoom (e.g. 14, scaleDenom ~34k) has less map detail
+  // than zoom 15 (scaleDenom ~17k) which matches UTM Level 12. The higher tile
+  // budget on border pages (WMTS_MAX_TILES_BORDER_PAGE) absorbs the extra tiles.
+  // On single-provider pages, keep lat correction for optimal ground resolution.
+  const avgLat = (minLat + maxLat) / 2;
+  const latFactor = maxTiles ? 1 : Math.cos(avgLat * Math.PI / 180);
+  let zoom = Math.round(Math.log2(156543.03 * latFactor / desiredMPerPx));
+  // Check for undefined instead of falsy (0 is a valid zoom level but falsy in JS)
+  zoom = Math.max(0, Math.min(zoom, maxZoomLimit !== undefined ? maxZoomLimit : provider.wmts.maxZoom));
+
+  // Convert WGS84 to tile coordinates
+  const n = Math.pow(2, zoom);
+  const minTileX = Math.floor((minLon + 180) / 360 * n);
+  const maxTileX = Math.floor((maxLon + 180) / 360 * n);
+  const minTileY = Math.floor((1 - Math.log(Math.tan(maxLat * Math.PI / 180) + 1 / Math.cos(maxLat * Math.PI / 180)) / Math.PI) / 2 * n);
+  const maxTileY = Math.floor((1 - Math.log(Math.tan(minLat * Math.PI / 180) + 1 / Math.cos(minLat * Math.PI / 180)) / Math.PI) / 2 * n);
+
+  // Limit tile count
+  const tileLimit = maxTiles || WMTS_MAX_TILES_PER_PAGE;
+  const tileCount = (maxTileX - minTileX + 1) * (maxTileY - minTileY + 1);
+  if (tileCount > tileLimit) {
+    if (zoom <= 0) {
+      console.warn(`[PDF] ${providerId}: Cannot reduce zoom further, using zoom 0`);
+      // Continue with current zoom level instead of recursing infinitely
+    } else {
+      // Reduce zoom
+      return fetchWebMercatorStitchedImageForProvider(providerId, bbox, widthPx, heightPx, epsgCode, layerId, zoom - 1, maxTiles);
+    }
+  }
+
+  const tileSize = 256;
+  const cols = maxTileX - minTileX + 1;
+  const rows = maxTileY - minTileY + 1;
+  const mosaicW = cols * tileSize;
+  const mosaicH = rows * tileSize;
+
+  const mosaic = document.createElement("canvas");
+  mosaic.width = mosaicW;
+  mosaic.height = mosaicH;
+  const mctx = getContext2d(mosaic);
+
+  // Fetch tiles
+  const tasks = [];
+  for (let tileY = minTileY; tileY <= maxTileY; tileY++) {
+    for (let tileX = minTileX; tileX <= maxTileX; tileX++) {
+      const x = tileX - minTileX;
+      const y = tileY - minTileY;
+      const url = getLeafletTileUrl(providerId, layer)
+        .replace("{z}", zoom)
+        .replace("{x}", tileX)
+        .replace("{y}", tileY);
+      tasks.push({ url, x, y });
+    }
+  }
+
+  console.debug(`[PDF] Fetching ${providerId} tiles:`, { zoom, tileCount: tasks.length, sampleUrl: tasks[0]?.url });
+
+  const concurrency = 8;
+  let cursor = 0;
+  let failedCount = 0;
+  const workers = Array.from({ length: concurrency }, async () => {
+    while (cursor < tasks.length) {
+      const i = cursor;
+      cursor += 1;
+      const t = tasks[i];
+      try {
+        const bmp = await fetchTileBitmap(t.url);
+        mctx.drawImage(bmp, t.x * tileSize, t.y * tileSize, tileSize, tileSize);
+      } catch (err) {
+        failedCount += 1;
+        console.warn(`[PDF ${providerId}] Failed to fetch tile ${failedCount}/${tasks.length}: ${t.url}`, err.message || err);
+        mctx.fillStyle = "#e0e0e0";
+        mctx.fillRect(t.x * tileSize, t.y * tileSize, tileSize, tileSize);
+      }
+    }
+  });
+
+  await Promise.all(workers);
+  if (failedCount > 0) {
+    console.error(`[PDF ${providerId}] ${failedCount}/${tasks.length} tiles failed`);
+  }
+  if (failedCount > tasks.length * 0.2) {
+    throw new Error(`Too many tile failures for ${providerId}: ${failedCount}/${tasks.length} tiles failed. Check network connection and proxy credentials.`);
+  }
+
+  // Calculate the WGS84 bounds of the mosaic
+  const mosaicMinLon = minTileX / n * 360 - 180;
+  const mosaicMaxLon = (maxTileX + 1) / n * 360 - 180;
+  const mosaicMaxLat = Math.atan(Math.sinh(Math.PI * (1 - 2 * minTileY / n))) * 180 / Math.PI;
+  const mosaicMinLat = Math.atan(Math.sinh(Math.PI * (1 - 2 * (maxTileY + 1) / n))) * 180 / Math.PI;
+
+  // Convert WGS84 lon/lat to mosaic pixel coordinates.
+  // X is linear in longitude; Y uses Mercator math: y = ln(tan(π/4 + lat/2))
+  const mercY = (lat) => Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360));
+  const mosaicMercTop = mercY(mosaicMaxLat);
+  const mosaicMercBot = mercY(mosaicMinLat);
+  const mosaicMercH = mosaicMercTop - mosaicMercBot;
+
+  const wgs84ToMosaicPx = ([lon, lat]) => [
+    (lon - mosaicMinLon) / (mosaicMaxLon - mosaicMinLon) * mosaicW,
+    (mosaicMercTop - mercY(lat)) / mosaicMercH * mosaicH,
+  ];
+
+  // Get all 4 UTM bbox corners in WGS84 (preserving the rotation)
+  const corners = utmBboxCornersToWgs84(bbox, epsgCode);
+
+  // Map each corner to mosaic pixel position
+  const mTL = wgs84ToMosaicPx(corners.tl);
+  const mTR = wgs84ToMosaicPx(corners.tr);
+  const mBL = wgs84ToMosaicPx(corners.bl);
+
+  // Compute affine: mosaic pixels → output canvas pixels
+  // TL → (0,0), TR → (widthPx,0), BL → (0,heightPx)
+  const xf = computeAffineTransform(
+    mTL, mTR, mBL,
+    [0, 0], [widthPx, 0], [0, heightPx]
+  );
+
+  const out = document.createElement("canvas");
+  out.width = widthPx;
+  out.height = heightPx;
+  const octx = getContext2d(out);
+  // Pre-fill with white so transparent/failed areas don't render black in PDF
+  octx.fillStyle = "#ffffff";
+  octx.fillRect(0, 0, widthPx, heightPx);
+  // Apply affine transform and draw the full mosaic; the transform
+  // maps the relevant region to the output canvas automatically.
+  octx.setTransform(xf.a, xf.b, xf.c, xf.d, xf.e, xf.f);
+  octx.drawImage(mosaic, 0, 0);
+  octx.setTransform(1, 0, 0, 1, 0, 0);
+
+  // Free mosaic pixel buffer
+  mosaic.width = 0;
+  mosaic.height = 0;
+
+  return out;
+}
+
+/**
+ * Composite multiple provider canvases with border clipping
+ */
+async function compositeProviderImages(canvases, providers, bbox, epsgCode, widthPx, heightPx) {
+  const out = document.createElement("canvas");
+  out.width = widthPx;
+  out.height = heightPx;
+  const ctx = getContext2d(out);
+
+  // Pre-fill with white background so transparent/failed areas don't render black in PDF
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, widthPx, heightPx);
+
+  // Single provider - just draw directly without polygon clipping
+  // This avoids issues with complex MultiPolygon borders (Sweden/Finland)
+  if (providers.length === 1 && canvases[0]) {
+    ctx.drawImage(canvases[0], 0, 0);
+    return createImageBitmap(out);
+  }
+
+  // Multiple providers - canvases are affine-transformed from WebMercator to UTM
+  // pixel space. Clip polygons must be projected to the same UTM CRS to align
+  // correctly with the canvas pixels.
+  // Strategy: draw first provider unclipped as background (fills gaps between
+  // simplified polygons), then draw all providers clipped to their country
+  // polygons for clean borders.
+  const { getCountryPolygon } = await import("./providers/borders.js");
+
+  // Draw first available provider as full background (gap-filling)
+  for (let i = 0; i < canvases.length; i++) {
+    if (canvases[i]) {
+      ctx.drawImage(canvases[i], 0, 0);
+      break;
+    }
+  }
+
+  // Draw all providers clipped to their country polygons using UTM projection
+  for (let i = 0; i < providers.length; i++) {
+    const providerId = providers[i];
+    const canvas = canvases[i];
+    if (!canvas) continue;
+
+    try {
+      const polygon = await getCountryPolygon(providerId);
+      if (polygon) {
+        ctx.save();
+        applyClipForUtmBbox(ctx, polygon, bbox, epsgCode, widthPx, heightPx);
+        ctx.drawImage(canvas, 0, 0);
+        ctx.restore();
+      } else {
+        ctx.drawImage(canvas, 0, 0);
+      }
+    } catch (err) {
+      console.error(`[PDF] Clipping failed for provider ${providerId}, drawing without clip:`, err);
+      ctx.drawImage(canvas, 0, 0);
+    }
+  }
 
   return createImageBitmap(out);
+}
+
+/**
+ * Apply polygon clip path by projecting WGS84 polygon coordinates to the
+ * page's UTM CRS. The provider canvases are affine-transformed from
+ * WebMercator into UTM pixel space, so clipping must use the same UTM
+ * projection for correct alignment. The previous Mercator-Y approach caused
+ * multi-pixel misalignment at high latitudes due to UTM grid convergence.
+ */
+function applyClipForUtmBbox(ctx, polygon, bbox, epsgCode, widthPx, heightPx) {
+  const [minE, minN, maxE, maxN] = bbox;
+  const utmDef = `+proj=utm +zone=${epsgCode - 25800} +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs`;
+  const toUtm = proj4("EPSG:4326", utmDef);
+
+  const geometry = polygon.geometry || polygon;
+  let rings;
+  if (geometry.type === "Polygon") {
+    rings = geometry.coordinates;
+  } else if (geometry.type === "MultiPolygon") {
+    rings = geometry.coordinates.flatMap(poly => poly);
+  } else {
+    return;
+  }
+
+  ctx.beginPath();
+  for (const ring of rings) {
+    let started = false;
+    for (const [lon, lat] of ring) {
+      const [easting, northing] = toUtm.forward([lon, lat]);
+      const px = ((easting - minE) / (maxE - minE)) * widthPx;
+      const py = ((maxN - northing) / (maxN - minN)) * heightPx;
+
+      if (!started) {
+        ctx.moveTo(px, py);
+        started = true;
+      } else {
+        ctx.lineTo(px, py);
+      }
+    }
+    ctx.closePath();
+  }
+  ctx.clip("evenodd");
+}
+
+function drawUtmGrid(ctx, bbox, wPx, hPx, spacing = 1000) {
+  const [minX, minY, maxX, maxY] = bbox;
+  const bboxW = maxX - minX;
+  const bboxH = maxY - minY;
+
+  const toPixelX = (x) => ((x - minX) / bboxW) * wPx;
+  const toPixelY = (y) => ((maxY - y) / bboxH) * hPx;
+
+  // Draw cyan grid lines.
+  // Use lineWidth 2 and opacity 0.75 so the lines remain detectable (max
+  // channel ≥150) even over dark Scandinavian forest backgrounds.
+  ctx.save();
+  ctx.strokeStyle = "rgba(0, 210, 210, 0.75)";
+  ctx.lineWidth = 2;
+
+  const startX = Math.ceil(minX / spacing) * spacing;
+  for (let x = startX; x <= maxX; x += spacing) {
+    const px = Math.round(toPixelX(x));
+    ctx.beginPath();
+    ctx.moveTo(px, 0);
+    ctx.lineTo(px, hPx);
+    ctx.stroke();
+  }
+
+  const startY = Math.ceil(minY / spacing) * spacing;
+  for (let y = startY; y <= maxY; y += spacing) {
+    const py = Math.round(toPixelY(y));
+    ctx.beginPath();
+    ctx.moveTo(0, py);
+    ctx.lineTo(wPx, py);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // Draw coordinate labels centered on grid lines
+  ctx.save();
+  ctx.fillStyle = "#333";
+  ctx.font = "bold 18px sans-serif";
+
+  // Northing labels right-aligned to the middle vertical grid line
+  const verticalLines = [];
+  for (let x = startX; x <= maxX; x += spacing) verticalLines.push(toPixelX(x));
+  const midVerticalPx = verticalLines[Math.floor(verticalLines.length / 2)] ?? wPx / 2;
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  for (let y = startY; y <= maxY; y += spacing) {
+    const py = toPixelY(y);
+    if (py < 20 || py > hPx - 20) continue;
+    ctx.fillText(`${y}m N`, midVerticalPx - 4, py);
+  }
+
+  // Easting labels rotated 90° CCW along vertical grid lines, centered on middle horizontal line
+  const horizontalLines = [];
+  for (let y = startY; y <= maxY; y += spacing) horizontalLines.push(toPixelY(y));
+  const midHorizontalPx = horizontalLines[Math.floor(horizontalLines.length / 2)] ?? hPx / 2;
+  for (let x = startX; x <= maxX; x += spacing) {
+    const px = toPixelX(x);
+    if (px < 40 || px > wPx - 40) continue;
+    ctx.save();
+    ctx.translate(px, midHorizontalPx);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(`${x}m E`, 4, 0);
+    ctx.restore();
+  }
+
+  ctx.restore();
 }
 
 function drawTrackOnCanvas(ctx, xs, ys, bbox, width, height, color, opacity, trackWidth) {
@@ -2582,6 +3371,14 @@ function drawTrackOnCanvas(ctx, xs, ys, bbox, width, height, color, opacity, tra
       drawMask[i] = 1;
       if (i > 0) drawMask[i - 1] = 1;
       if (i + 1 < xs.length) drawMask[i + 1] = 1;
+    }
+  }
+  // Mark segments that cross the bbox even when neither endpoint is inside
+  for (let i = 0; i < xs.length - 1; i += 1) {
+    if (drawMask[i] && drawMask[i + 1]) continue;
+    if (segmentIntersectsBBox(xs[i], ys[i], xs[i + 1], ys[i + 1], bbox)) {
+      drawMask[i] = 1;
+      drawMask[i + 1] = 1;
     }
   }
 
@@ -2619,10 +3416,10 @@ function drawPageLabel(ctx, pageNumber, scale, epsgCode) {
   const utmZone = epsgCode - 25800;
   const label = `${pageNumber} | 1:${formatScaleLabel(scale)} | UTM ${utmZone}`;
   const pad = 12;
-  ctx.font = "18px IBM Plex Mono, monospace";
+  ctx.font = "27px IBM Plex Mono, monospace";
   const metrics = ctx.measureText(label);
   const textW = metrics.width;
-  const textH = 21;
+  const textH = 32;
   ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
   ctx.fillRect(pad, pad, textW + pad * 2, textH + pad);
   ctx.fillStyle = "#111";
@@ -2643,8 +3440,8 @@ function formatConvergence(deg) {
   return `${absVal}° ${hemi}`;
 }
 
-function computeGridConvergenceDeg(lonDeg, latDeg) {
-  const zone = utmZoneFromLon(lonDeg);
+function computeGridConvergenceDeg(lonDeg, latDeg, epsgCode) {
+  const zone = epsgCode ? (epsgCode - 25800) : utmZoneFromLon(lonDeg);
   const lon0 = zone * 6 - 183;
   const deltaLon = (lonDeg - lon0) * (Math.PI / 180);
   const lat = latDeg * (Math.PI / 180);
@@ -2667,8 +3464,8 @@ function drawDeclinationLabel(ctx, declinationTrue, convergence, width, height) 
     `Mag. dekl. (sand nord): ${formatDeclination(declinationTrue)}`,
   ];
   const pad = 12;
-  ctx.font = "18px IBM Plex Mono, monospace";
-  const lineHeight = 21;
+  ctx.font = "27px IBM Plex Mono, monospace";
+  const lineHeight = 32;
   const textW = Math.max(...lines.map((line) => ctx.measureText(line).width));
   const boxH = lineHeight * lines.length + pad;
   const boxY = height - pad - boxH;
@@ -2684,6 +3481,14 @@ function canvasToBlob(canvas, type, quality) {
   return new Promise((resolve) => {
     canvas.toBlob((blob) => resolve(blob), type, quality);
   });
+}
+
+function getContext2d(canvas) {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    throw new Error(`Kunne ikke oprette 2D canvas context (${canvas.width}x${canvas.height}px). Prøv en mindre sidestørrelse.`);
+  }
+  return ctx;
 }
 
 function createRenderProgressUpdater(total) {
@@ -2834,6 +3639,9 @@ async function renderGPXToPdf(file, options) {
   }
   setRenderProgress(0, pages.length, false);
 
+  // Enable tile cache to avoid redundant fetches for overlapping pages
+  enableTileCache();
+
   const pdfDoc = await PDFDocument.create();
   const results = Array.from({ length: pages.length });
   let completed = 0;
@@ -2841,26 +3649,27 @@ async function renderGPXToPdf(file, options) {
 
   const tasks = pages.map((pageInfo, idx) => async () => {
     const { bbox: pageBBox, wPx, hPx } = pageInfo;
-    const baseImgPromise = fetchWmtsStitchedImage(
-      pageBBox,
-      wPx,
-      hPx,
-      epsg,
-      options.layer
-    );
 
-    const gridImgPromise = fetchWmsImage(
-      {
-        baseUrl: WMS_GRID_URL,
-        layer: GRID_LAYER,
-        styles: "",
-        format: "image/png",
-        transparent: true,
-      },
-      pageBBox,
+    // Determine optimal UTM zone for THIS page based on its center longitude.
+    // This ensures the page CRS matches the WMS grid service's native zone,
+    // keeping grid lines perfectly horizontal/vertical.
+    const pageWgs84 = utmBboxToWgs84(pageBBox, epsg);
+    const pageCenterLon = (pageWgs84[0] + pageWgs84[2]) / 2;
+    const pageEpsg = optimalNorwayEpsg(pageCenterLon);
+    let localBBox = pageBBox;
+    let localEpsg = epsg;
+    if (pageEpsg !== epsg) {
+      localBBox = reprojectUtmBbox(pageBBox, epsg, pageEpsg);
+      localEpsg = pageEpsg;
+    }
+
+    // Use composite fetching for multi-country support
+    const baseImgPromise = fetchCompositeWmtsStitchedImage(
+      localBBox,
       wPx,
       hPx,
-      epsg
+      localEpsg,
+      options.layer
     );
 
   const overlayPromises = [];
@@ -2886,10 +3695,10 @@ async function renderGPXToPdf(file, options) {
           format: "image/png",
           transparent: true,
         },
-        pageBBox,
+        localBBox,
         heightWidthPx,
         heightHeightPx,
-        epsg
+        localEpsg
       )
     );
   const weakIceOverlayPromises = weakIceLayers.map((layerName) =>
@@ -2901,10 +3710,10 @@ async function renderGPXToPdf(file, options) {
         format: "image/png",
         transparent: true,
       },
-      pageBBox,
+      localBBox,
       wPx,
       hPx,
-      epsg
+      localEpsg
     )
   );
   if (options.showSkiRoutes) {
@@ -2917,10 +3726,10 @@ async function renderGPXToPdf(file, options) {
             format: "image/png",
             transparent: true,
           },
-          pageBBox,
+          localBBox,
           wPx,
           hPx,
-          epsg
+          localEpsg
         )
       );
     }
@@ -2934,17 +3743,16 @@ async function renderGPXToPdf(file, options) {
             format: "image/png",
             transparent: true,
           },
-          pageBBox,
+          localBBox,
           wPx,
           hPx,
-          epsg
+          localEpsg
         )
       );
     }
 
-  const [baseImg, gridImg, ...overlayImgs] = await Promise.all([
+  const [baseImg, ...overlayImgs] = await Promise.all([
     baseImgPromise,
-    gridImgPromise,
     ...heightOverlayPromises,
     ...weakIceOverlayPromises,
     ...overlayPromises,
@@ -2972,9 +3780,9 @@ async function renderGPXToPdf(file, options) {
     const canvas = document.createElement("canvas");
     canvas.width = wPx;
     canvas.height = hPx;
-    const ctx = canvas.getContext("2d");
+    const ctx = getContext2d(canvas);
     ctx.drawImage(baseImg, 0, 0, wPx, hPx);
-    ctx.drawImage(gridImg, 0, 0, wPx, hPx);
+    drawUtmGrid(ctx, localBBox, wPx, hPx);
   if (maskedHeightOverlays.length) {
     ctx.save();
     ctx.globalAlpha = heightOpacity;
@@ -2999,29 +3807,50 @@ async function renderGPXToPdf(file, options) {
       });
       ctx.restore();
     }
+    // Reproject track coords to per-page zone if needed
+    let drawXs = xs;
+    let drawYs = ys;
+    if (localEpsg !== epsg) {
+      const fromZone = epsg - 25800;
+      const toZone = localEpsg - 25800;
+      const fromDef = `+proj=utm +zone=${fromZone} +ellps=GRS80 +units=m +no_defs`;
+      const toDef = `+proj=utm +zone=${toZone} +ellps=GRS80 +units=m +no_defs`;
+      const reproj = proj4(fromDef, toDef);
+      drawXs = new Array(xs.length);
+      drawYs = new Array(ys.length);
+      for (let i = 0; i < xs.length; i++) {
+        const [rx, ry] = reproj.forward([xs[i], ys[i]]);
+        drawXs[i] = rx;
+        drawYs[i] = ry;
+      }
+    }
     drawTrackOnCanvas(
       ctx,
-      xs,
-      ys,
-      pageBBox,
+      drawXs,
+      drawYs,
+      localBBox,
       wPx,
       hPx,
       options.trackColor ?? "#ff0000",
       options.trackOpacity,
       options.trackWidth
     );
-    drawPageLabel(ctx, idx + 1, options.scale, epsg);
+    drawPageLabel(ctx, idx + 1, options.scale, localEpsg);
     if (declinationModel) {
-      const centerX = (pageBBox[0] + pageBBox[2]) / 2;
-      const centerY = (pageBBox[1] + pageBBox[3]) / 2;
-      const [lon, lat] = transformer.inverse([centerX, centerY]);
+      const centerX = (localBBox[0] + localBBox[2]) / 2;
+      const centerY = (localBBox[1] + localBBox[3]) / 2;
+      const localZone = localEpsg - 25800;
+      const localUtmDef = `+proj=utm +zone=${localZone} +ellps=GRS80 +units=m +no_defs`;
+      const localTransformer = proj4("EPSG:4326", localUtmDef);
+      const [lon, lat] = localTransformer.inverse([centerX, centerY]);
       let info;
       try {
         info = declinationModel.point([lat, lon, 0], modelDate);
       } catch (error) {
+        console.warn("Declination model date-specific lookup failed, using dateless fallback:", error);
         info = declinationModel.point([lat, lon, 0]);
       }
-      const convergence = computeGridConvergenceDeg(lon, lat);
+      const convergence = computeGridConvergenceDeg(lon, lat, localEpsg);
       drawDeclinationLabel(ctx, info.decl, convergence, wPx, hPx);
     }
 
@@ -3038,6 +3867,10 @@ async function renderGPXToPdf(file, options) {
     if (!imageBlob) {
       throw new Error("Kunne ikke oprette sidebillede.");
     }
+
+    // Free page canvas pixel buffer
+    canvas.width = 0;
+    canvas.height = 0;
 
     results[idx] = { imageBlob, imageFormat };
     completed += 1;
@@ -3071,6 +3904,9 @@ async function renderGPXToPdf(file, options) {
     });
   }
 
+  // Clear tile cache now that all pages are rendered
+  clearTileCache();
+
   const pdfBytes = await pdfDoc.save();
   return new Blob([pdfBytes], { type: "application/pdf" });
 }
@@ -3082,6 +3918,7 @@ setupTrackWidth();
 setupSidebarToggle();
 setupConfirmModal();
 initMap();
+updateScaleWarning();
 
 const controlsForm = document.getElementById("controls");
 const fileInput = document.getElementById("gpxFile");
@@ -3160,6 +3997,7 @@ function generateLayout(statusMessage) {
   setStatus(layout.statusLine || "Layout klar.");
   updateRenderButtonState();
   renderPageOverlays();
+  fitMapToLayout();
   updateSelectionBar();
   const nextHeightBounds = computeHeightOverlayBounds();
   if (!boundsEqual(heightOverlayBounds, nextHeightBounds)) {
@@ -3198,6 +4036,11 @@ function boundsEqual(a, b) {
 
 async function handleFileSelection(file) {
   if (!file) return;
+  if (file.size > MAX_GPX_FILE_SIZE) {
+    const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+    setStatus(`Fejl: Filen er for stor (${sizeMB} MB). Maksimum er ${MAX_GPX_FILE_SIZE / (1024 * 1024)} MB.`);
+    return;
+  }
   selectedFile = file;
   cachedPoints = null;
   projectionState = null;
@@ -3213,6 +4056,7 @@ async function handleFileSelection(file) {
         projection = await parseLargeGpxWithWorker(file);
         points = projection.pointsLonLat;
       } catch (workerError) {
+        console.warn("Worker-based GPX parsing failed, falling back to main thread:", workerError);
         const text = await file.text();
         points = parseGPX(text);
         projection = buildProjection(points);
@@ -3295,6 +4139,32 @@ if (removePageBtn) {
   });
 }
 
+if (lockToggleBtn) {
+  lockToggleBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleSelectedLock();
+  });
+}
+
+if (lockAllBtn) {
+  lockAllBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleLockAll();
+  });
+}
+
+const insertPageBtn = document.getElementById("insertPageBtn");
+if (insertPageBtn) {
+  insertPageBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (selectedPageIndex !== null && layoutPages[selectedPageIndex]) {
+      addPageToRight(selectedPageIndex);
+    } else {
+      addPageAtCenter();
+    }
+  });
+}
+
 if (mapToastCloseEl) {
   mapToastCloseEl.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -3345,6 +4215,12 @@ if (selectionSelectEl) {
 }
 
 selectionBarEl.addEventListener("click", (event) => {
+  event.stopPropagation();
+});
+selectionBarEl.addEventListener("mousedown", (event) => {
+  event.stopPropagation();
+});
+selectionBarEl.addEventListener("touchstart", (event) => {
   event.stopPropagation();
 });
 
@@ -3431,6 +4307,37 @@ heightLayerToggleEls.forEach((toggle) => {
     updateHeightOverlays();
   });
 });
+
+// Overlay tab switching
+overlayTabsEl.forEach((tab) => {
+  tab.addEventListener("click", () => {
+    const country = tab.dataset.country;
+    // Update tabs
+    overlayTabsEl.forEach((t) => {
+      t.classList.toggle("active", t.dataset.country === country);
+      t.setAttribute("aria-selected", t.dataset.country === country);
+    });
+    // Update content panels
+    overlayContentsEl.forEach((content) => {
+      content.classList.toggle("active", content.dataset.country === country);
+    });
+  });
+});
+
+// Scale warning for Swedish maps at 1:25,000
+function updateScaleWarning() {
+  if (!scaleWarningEl) return;
+  // Only show warning when track intersects Swedish territory
+  let touchesSweden = false;
+  if (cachedPoints && selections.scale === 25000) {
+    const seBounds = PROVIDERS.se.bounds;
+    touchesSweden = cachedPoints.some(([lon, lat]) =>
+      lon >= seBounds.minLon && lon <= seBounds.maxLon &&
+      lat >= seBounds.minLat && lat <= seBounds.maxLat
+    );
+  }
+  scaleWarningEl.classList.toggle("hidden", !touchesSweden);
+}
 
 if (heightOpacityEl) {
   updateHeightOpacityLabel();
