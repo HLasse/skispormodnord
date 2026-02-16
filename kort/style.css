@@ -487,10 +487,6 @@ h1 {
   color: var(--accent-700);
 }
 
-.info-section {
-  margin-top: 16px;
-}
-
 .info-note {
   margin: 8px 0 0;
   font-size: 11px;
