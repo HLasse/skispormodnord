@@ -83,6 +83,11 @@ h1 {
   fill-opacity: 0.3;
 }
 
+.map-panel.page-previews-hidden .leaflet-overlay-pane .page-rect,
+.map-panel.page-previews-hidden .page-label {
+  display: none !important;
+}
+
 .map-overlay {
   position: absolute;
   inset: 0;
@@ -241,7 +246,8 @@ h1 {
 }
 
 .map-hint-tip-primary,
-.map-hint-tip-secondary {
+.map-hint-tip-secondary,
+.map-hint-tip-tertiary {
   max-width: min(320px, calc(100% - 32px));
   background: rgba(255, 255, 255, 0.96);
   color: var(--ink);
@@ -252,7 +258,7 @@ h1 {
   bottom: 60px;
   right: 18px;
   border: none;
-  background: rgba(30, 27, 22, 0.9);
+  background: rgba(30, 27, 22, 0.75);
   color: white;
   padding: 12px 18px;
   border-radius: 12px;
@@ -266,9 +272,177 @@ h1 {
   gap: 8px;
 }
 
+.map-preview-toggle .icon-hidden {
+  display: none;
+}
+
+.map-preview-toggle.is-hidden .icon-visible {
+  display: none;
+}
+
+.map-preview-toggle.is-hidden .icon-hidden {
+  display: block;
+}
+
 .map-action:hover,
 .map-action:focus-visible {
   background: rgba(30, 27, 22, 0.75);
+}
+
+/* Draw toolbar */
+.draw-toolbar {
+  position: absolute;
+  top: 80px;
+  left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: auto;
+  z-index: 1001;
+}
+
+.draw-toolbar-btn {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(30, 27, 22, 0.85);
+  color: white;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  transition: background 0.15s;
+}
+
+.draw-toolbar-btn:hover,
+.draw-toolbar-btn:focus-visible {
+  background: rgba(30, 27, 22, 0.7);
+}
+
+.draw-toolbar-btn.active {
+  background: rgba(211, 107, 45, 0.85);
+  box-shadow: 0 2px 8px rgba(211, 107, 45, 0.3);
+}
+
+.draw-toolbar-btn.hidden {
+  display: none;
+}
+
+/* Hotkey hint badges - shown on parent hover */
+.hotkey-hint {
+  display: none;
+  position: absolute;
+  bottom: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #1e1b16;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: system-ui, sans-serif;
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.draw-toolbar-btn:hover .hotkey-hint,
+.map-action:hover .hotkey-hint {
+  display: block;
+}
+
+.map-action .hotkey-hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: static;
+  margin-left: 4px;
+  opacity: 0.5;
+  background: none;
+  box-shadow: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 11px;
+  height: auto;
+  line-height: inherit;
+  min-width: auto;
+  padding: 0;
+}
+
+/* Waypoint action bar */
+.draw-point-action {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: rgba(30, 27, 22, 0.85);
+  color: white;
+  border-radius: 999px;
+  font-size: 11px;
+  pointer-events: auto;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  z-index: 1003;
+  transform: translate(-50%, -100%);
+  margin-top: -8px;
+}
+
+.draw-point-action.hidden {
+  display: none;
+}
+
+.draw-point-hint {
+  opacity: 0.5;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* Reverse button active state */
+.draw-toolbar-btn.reverse-active {
+  background: rgba(78, 128, 200, 0.7);
+}
+
+/* Draw export section */
+.track-export-footer {
+  margin-top: 2px;
+  padding-top: 12px;
+  border-top: 1px solid #f0e4d7;
+}
+
+.track-export-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.track-export-actions .secondary.compact {
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+  text-align: center;
+  white-space: normal;
+}
+
+.secondary.compact {
+  padding: 6px 12px;
+  font-size: 12px;
+  width: fit-content;
+}
+
+/* Draw mode cursor override */
+.draw-mode-active .leaflet-container {
+  cursor: crosshair !important;
+}
+
+/* Draw mode active border indicator */
+.map-panel.draw-mode-active {
+  box-shadow: inset 0 0 0 2px rgba(211, 107, 45, 0.6);
 }
 
 .map-action-icon {
@@ -496,7 +670,13 @@ h1 {
 
 .controls {
   display: grid;
-  gap: 16px;
+  gap: 14px;
+}
+
+.track-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .upload {
@@ -506,14 +686,20 @@ h1 {
 
 .track-color {
   display: grid;
-  gap: 10px;
+  gap: 8px;
+  padding-top: 7px;
+  border-top: 1px solid #f0e4d7;
 }
 
 .track-opacity {
   display: grid;
-  gap: 6px;
+  gap: 4px;
   font-size: 13px;
   color: var(--muted);
+}
+
+.track-color .range-field {
+  gap: 4px;
 }
 
 .track-opacity-row {
@@ -696,7 +882,7 @@ h1 {
 
 .field-title {
   font-weight: 600;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .dropzone {
@@ -747,20 +933,161 @@ h1 {
   font-size: 13px;
   color: var(--muted);
   display: grid;
-  gap: 4px;
+  gap: 8px;
 }
 
 .file-meta.hidden {
   display: none;
 }
 
+.file-meta-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  table-layout: fixed;
+}
+
+.file-meta-table th,
+.file-meta-table td {
+  padding: 6px 0;
+  text-align: left;
+  border-bottom: 1px solid #efe4d7;
+}
+
+.file-meta-table th:first-child,
+.file-meta-table td:first-child {
+  width: 28px;
+  text-align: center;
+  padding-right: 8px;
+}
+
+.file-meta-table th:nth-child(2),
+.file-meta-table td:nth-child(2) {
+  width: 60%;
+  padding-right: 12px;
+}
+
+.file-meta-table th:nth-child(3),
+.file-meta-table td:nth-child(3) {
+  width: 24%;
+  white-space: nowrap;
+  color: #4f463c;
+}
+
+.file-meta-table th:last-child,
+.file-meta-table td:last-child {
+  width: 32px;
+  text-align: right;
+}
+
+.file-meta-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.file-meta-row {
+  cursor: zoom-in;
+}
+
+.file-meta-row td {
+  transition: background-color 0.15s ease;
+}
+
+.file-meta-row:hover td,
+.file-meta-row.is-hovered td {
+  background: #f8efe4;
+}
+
+.file-meta-row.is-dragging td {
+  opacity: 0.45;
+}
+
+.file-meta-row.drop-before td {
+  box-shadow: inset 0 2px 0 #d36b2d;
+}
+
+.file-meta-row.drop-after td {
+  box-shadow: inset 0 -2px 0 #d36b2d;
+}
+
+.file-meta-reorder {
+  text-align: center;
+}
+
+.file-meta-handle {
+  border: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #8f7f6d;
+  cursor: grab;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.file-meta-handle:active {
+  cursor: grabbing;
+}
+
+.file-meta-handle:hover,
+.file-meta-handle:focus-visible,
+.file-meta-row.is-hovered .file-meta-handle {
+  background: #efe3d4;
+  color: #6f6050;
+}
+
+.file-meta-handle-icon {
+  width: 9px;
+  height: 14px;
+  background-image: radial-gradient(currentColor 1px, transparent 1px);
+  background-size: 4px 4px;
+  background-position: 0 0;
+}
+
+.file-meta-name {
+  max-width: none;
+}
+
+.file-meta-name-text {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-meta-hint {
+  margin: 0;
+  font-size: 11px;
+  color: #7f7365;
+}
+
+.file-meta-remove {
+  border: 1px solid rgba(255, 120, 80, 0.45);
+  border-radius: 999px;
+  width: 24px;
+  height: 24px;
+  background: rgba(255, 120, 80, 0.18);
+  color: #b44b2f;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.file-meta-remove:hover,
+.file-meta-remove:focus-visible {
+  background: rgba(255, 120, 80, 0.28);
+  color: #8f321c;
+}
+
 .control-section {
   border: 1px solid #f0e4d7;
   border-radius: 16px;
-  padding: 16px;
+  padding: 11px 14px;
   background: #fffdf9;
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .section-header {
@@ -769,6 +1096,76 @@ h1 {
   text-transform: uppercase;
   letter-spacing: 0.12em;
   color: var(--muted);
+  line-height: 1.2;
+}
+
+.control-section-collapsible {
+  gap: 0;
+}
+
+.control-section-collapsible .section-grid {
+  margin-top: 8px;
+}
+
+.section-summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.section-summary::-webkit-details-marker {
+  display: none;
+}
+
+.section-summary::marker {
+  content: "";
+}
+
+.section-summary::after {
+  content: "+";
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent-100);
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.control-section-collapsible[open] .section-summary::after {
+  content: "−";
+}
+
+.section-header-with-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.section-action-btn {
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  cursor: pointer;
+  color: var(--muted);
+  opacity: 0.6;
+  transition: opacity 0.15s, color 0.15s;
+  line-height: 1;
+}
+
+.section-action-btn:hover {
+  opacity: 1;
+  color: #c0392b;
+}
+
+.section-action-btn.hidden {
+  display: none;
 }
 
 .advanced {
@@ -809,7 +1206,41 @@ h1 {
 
 .section-grid {
   display: grid;
-  gap: 12px;
+  gap: 8px;
+}
+
+.sideinddeling-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+
+.sideinddeling-field .field-label-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 8px;
+  min-height: 1.55em;
+}
+
+.sideinddeling-field .field-label-text {
+  line-height: 1.2;
+}
+
+.sideinddeling-field .tooltip {
+  margin-left: 0;
+  justify-self: end;
+}
+
+.sideinddeling-field {
+  gap: 4px;
+}
+
+.sideinddeling-field .range-field {
+  gap: 4px;
+}
+
+.scale-field {
+  grid-column: 1 / -1;
 }
 
 @media (min-width: 760px) {
@@ -856,6 +1287,10 @@ h1 {
 
 .overlay-content.active {
   display: block;
+}
+
+.overlay-content .section-grid {
+  gap: 6px;
 }
 
 .overlay-placeholder {
@@ -906,7 +1341,7 @@ h1 {
   display: grid;
   gap: 6px;
   font-weight: 600;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .field input[type="file"],
@@ -923,6 +1358,23 @@ h1 {
   width: 16px;
   height: 16px;
   accent-color: var(--accent-500);
+}
+
+.toggle-field {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  column-gap: 8px;
+  row-gap: 4px;
+  align-items: center;
+}
+
+.toggle-field .tooltip {
+  margin-left: 0;
+}
+
+.toggle-field .range-field {
+  grid-column: 1 / -1;
+  padding-left: 24px;
 }
 
 .tooltip {
@@ -968,6 +1420,15 @@ h1 {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.segmented-scale {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.segmented-scale button {
+  flex: 0 0 auto;
 }
 
 .segmented button {

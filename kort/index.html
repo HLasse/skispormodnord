@@ -33,9 +33,69 @@
           <div class="map-panel">
             <div id="map" class="map"></div>
             <div class="map-overlay">
-              <button type="button" class="map-action" id="addPageBtn">
+              <!-- Draw toolbar -->
+              <div class="draw-toolbar" id="drawToolbar">
+                <button type="button" class="draw-toolbar-btn" id="drawToggleBtn" aria-label="Tegn rute" aria-keyshortcuts="D" title="Tegn rute (D)">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+                    <path d="m15 5 4 4"/>
+                  </svg>
+                  <span class="hotkey-hint">D</span>
+                </button>
+                <button type="button" class="draw-toolbar-btn hidden" id="drawReverseBtn" aria-label="Vend retning" title="Vend retning (tilf. punkter fra anden ende)">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M8 3 4 7l4 4"/>
+                    <path d="M4 7h12a4 4 0 0 1 4 4v1"/>
+                    <path d="m16 21 4-4-4-4"/>
+                    <path d="M20 17H8a4 4 0 0 1-4-4v-1"/>
+                  </svg>
+                </button>
+                <button type="button" class="draw-toolbar-btn hidden" id="drawClearBtn" aria-label="Slet rute" title="Slet hele ruten">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 6h18"/>
+                    <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                    <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="draw-toolbar-btn map-preview-toggle"
+                  id="togglePagePreviewsBtn"
+                  aria-label="Skjul sider"
+                  aria-keyshortcuts="V"
+                  aria-pressed="true"
+                  title="Skjul sider (V)"
+                >
+                  <svg class="icon-visible" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z"/>
+                    <circle cx="12" cy="12" r="3"/>
+                  </svg>
+                  <svg class="icon-hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M3 3l18 18"/>
+                    <path d="M10.6 10.6a3 3 0 0 0 4.2 4.2"/>
+                    <path d="M9.9 5.2A10.9 10.9 0 0 1 12 5c6.5 0 10 7 10 7a18.2 18.2 0 0 1-3.3 4.1"/>
+                    <path d="M6.6 6.6A18.2 18.2 0 0 0 2 12s3.5 7 10 7c1.6 0 3.1-.4 4.4-1.1"/>
+                  </svg>
+                  <span class="hotkey-hint">V</span>
+                </button>
+              </div>
+
+              <!-- Point action bar (appears on waypoint click) -->
+              <div class="draw-point-action hidden" id="drawPointActionBar">
+                <button type="button" class="chip danger" id="drawDeletePointBtn" aria-label="Slet punkt">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 6h18"/>
+                    <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                    <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                  </svg>
+                </button>
+                <span class="draw-point-hint">⇧+klik</span>
+              </div>
+
+              <button type="button" class="map-action" id="addPageBtn" aria-keyshortcuts="N" title="Tilføj side (N)">
                 <span class="map-action-icon" aria-hidden="true">+</span>
                 Tilføj side
+                <span class="hotkey-hint">N</span>
               </button>
               <div id="selectionBar" class="selection-bar hidden">
                 <button type="button" id="insertPageBtn" class="chip" aria-label="Indsæt side">+</button>
@@ -94,16 +154,16 @@
 
           <section class="panel">
             <form id="controls" class="controls">
-              <div class="control-section">
+              <div class="control-section track-section">
                 <div class="section-header">
-                  <span>GPX-upload</span>
+                  <span>Spor</span>
                 </div>
                 <div class="upload">
                   <label class="dropzone" id="dropzone">
-                    <input type="file" id="gpxFile" accept=".gpx" />
+                    <input type="file" id="gpxFile" accept=".gpx" multiple />
                     <div>
                       <strong>Træk din GPX her</strong>
-                      <span>eller klik for at vælge fil</span>
+                      <span>eller klik for at vælge filer</span>
                     </div>
                   </label>
                   <div id="fileMeta" class="file-meta hidden"></div>
@@ -147,11 +207,21 @@
                     </div>
                   </label>
                 </div>
+                <div class="track-export-footer hidden" id="drawExportSection">
+                  <div class="track-export-actions">
+                    <button type="button" class="secondary compact" id="exportDrawnBtn">
+                      Eksporter tegnet rute
+                    </button>
+                    <button type="button" class="secondary compact hidden" id="exportMergedBtn">
+                      Eksporter samlet rute
+                    </button>
+                  </div>
+                </div>
               </div>
 
               <div class="control-section">
                 <div class="section-header">
-                  <span>Kortlayout</span>
+                  <span>Kortformat</span>
                 </div>
                 <div class="section-grid">
                   <label class="field">
@@ -163,9 +233,9 @@
                     </div>
                   </label>
 
-                  <label class="field">
+                  <label class="field scale-field">
                     <span>Målestok</span>
-                    <div class="segmented" role="group" aria-label="Målestok">
+                    <div class="segmented segmented-scale" role="group" aria-label="Målestok">
                       <button type="button" data-scale="25000">1:25 000</button>
                       <button type="button" data-scale="50000" class="active">
                         1:50 000
@@ -173,22 +243,62 @@
                       <button type="button" data-scale="100000">1:100 000</button>
                     </div>
                   </label>
+                </div>
+              </div>
 
-                  <label class="field">
-                    <span>Orientering</span>
-                    <div class="segmented" role="group" aria-label="Orientering">
-                      <button type="button" data-orientation="auto" class="active">
-                        Auto
-                      </button>
-                      <button type="button" data-orientation="portrait">
-                        Portræt
-                      </button>
-                      <button type="button" data-orientation="landscape">
-                        Landskab
-                      </button>
+              <div class="control-section hidden" id="sideinddelingSection">
+                <div class="section-header">
+                  <span>Sidelayout</span>
+                </div>
+                <div class="section-grid sideinddeling-grid">
+                  <label class="field sideinddeling-field">
+                    <span class="field-label-row">
+                      <span class="field-label-text">Overlap (%)</span>
+                      <span
+                        class="tooltip"
+                        data-tooltip="Minimum overlap mellem tilstødende sider. Højere værdier giver mere fælles område. Bruges til automatisk sidelayout."
+                        aria-label="Minimum overlap mellem tilstødende sider. Højere værdier giver mere fælles område. Bruges til automatisk sidelayout."
+                      >?</span>
+                    </span>
+                    <div class="range-field">
+                      <div class="range-row">
+                        <input
+                          type="range"
+                          id="overlap"
+                          min="0"
+                          max="20"
+                          step="1"
+                          value="5"
+                        />
+                        <output id="overlapValue" for="overlap">5%</output>
+                      </div>
+                    </div>
+                  </label>
+                  <label class="field sideinddeling-field">
+                    <span class="field-label-row">
+                      <span class="field-label-text">Sikkerhedsmargin (%)</span>
+                      <span
+                        class="tooltip"
+                        data-tooltip="Mindste afstand fra spor til kant. Højere værdier giver mere terræn omkring sporet. Bruges til automatisk sidelayout."
+                        aria-label="Mindste afstand fra spor til kant. Højere værdier giver mere terræn omkring sporet. Bruges til automatisk sidelayout."
+                      >?</span>
+                    </span>
+                    <div class="range-field">
+                      <div class="range-row">
+                        <input
+                          type="range"
+                          id="margin"
+                          min="0"
+                          max="20"
+                          step="1"
+                          value="15"
+                        />
+                        <output id="marginValue" for="margin">15%</output>
+                      </div>
                     </div>
                   </label>
                 </div>
+                <p class="file-meta-hint">Højere værdier giver flere sider. Lavere værdier giver færre sider.</p>
               </div>
 
               <div class="control-section">
@@ -202,38 +312,32 @@
                 </div>
                 <div class="overlay-content active" data-country="no" role="tabpanel">
                   <div class="section-grid">
-                    <label class="field">
-                      <span>
-                        Skiruter
-                        <span
-                          class="tooltip"
-                          data-tooltip="Viser skiruter som blå linjer på kortet."
-                          aria-label="Viser skiruter som blå linjer på kortet."
-                        >?</span>
-                      </span>
+                    <label class="field toggle-field">
                       <input type="checkbox" id="skiRoutesToggle" />
+                      <span>Skiruter</span>
+                      <span
+                        class="tooltip"
+                        data-tooltip="Viser skiruter som blå linjer på kortet."
+                        aria-label="Viser skiruter som blå linjer på kortet."
+                      >?</span>
                     </label>
-                    <label class="field">
-                      <span>
-                        Vandreruter
-                        <span
-                          class="tooltip"
-                          data-tooltip="Viser vandreruter som røde linjer på kortet."
-                          aria-label="Viser vandreruter som røde linjer på kortet."
-                        >?</span>
-                      </span>
+                    <label class="field toggle-field">
                       <input type="checkbox" id="hikeRoutesToggle" />
+                      <span>Vandreruter</span>
+                      <span
+                        class="tooltip"
+                        data-tooltip="Viser vandreruter som røde linjer på kortet."
+                        aria-label="Viser vandreruter som røde linjer på kortet."
+                      >?</span>
                     </label>
-                    <label class="field">
-                      <span>
-                        Svag is
-                        <span
-                          class="tooltip"
-                          data-tooltip="Markerer områder med potentielt svag is i rødt."
-                          aria-label="Markerer områder med potentielt svag is i rødt."
-                        >?</span>
-                      </span>
+                    <label class="field toggle-field">
                       <input type="checkbox" id="weakIceToggle" />
+                      <span>Svag is</span>
+                      <span
+                        class="tooltip"
+                        data-tooltip="Markerer områder med potentielt svag is i rødt."
+                        aria-label="Markerer områder med potentielt svag is i rødt."
+                      >?</span>
                       <div class="weak-ice-opacity range-field hidden" id="weakIceOpacityGroup">
                         <span>Gennemsigtighed</span>
                         <div class="range-row">
@@ -249,21 +353,19 @@
                         </div>
                       </div>
                     </label>
-                    <label class="field">
-                      <span>
-                        Brathed
-                        <span
-                          class="tooltip"
-                          data-tooltip="Markerer stejle hældninger i rødt. Ses tydeligst ved høje zoomniveauer."
-                          aria-label="Markerer stejle hældninger i rødt. Ses tydeligst ved høje zoomniveauer."
-                        >?</span>
-                      </span>
+                    <label class="field toggle-field">
                       <input
                         type="checkbox"
                         id="heightSlopeToggle"
                         class="height-layer-toggle"
                         data-height-layer="DTM:helning_grader"
                       />
+                      <span>Brathed</span>
+                      <span
+                        class="tooltip"
+                        data-tooltip="Markerer stejle hældninger i rødt. Ses tydeligst ved høje zoomniveauer."
+                        aria-label="Markerer stejle hældninger i rødt. Ses tydeligst ved høje zoomniveauer."
+                      >?</span>
                       <div class="height-opacity range-field hidden" id="heightOpacityGroup">
                         <span>Gennemsigtighed</span>
                         <div class="range-row">
@@ -297,120 +399,68 @@
                 </div>
               </div>
 
-              <div class="control-section">
-                <details class="advanced">
-                  <summary>Avanceret</summary>
-                  <div class="section-grid">
-                    <label class="field">
-                      <span>
-                        Opløsning (DPI)
-                        <span
-                          class="tooltip"
-                          data-tooltip="Højere DPI giver skarpere PDF'er, men tager længere tid og giver større filer."
-                          aria-label="Højere DPI giver skarpere PDF'er, men tager længere tid og giver større filer."
-                        >?</span>
-                      </span>
-                      <select id="dpi" required>
-                        <option value="150">Lav (150 DPI)</option>
-                        <option value="300" selected>Mellem (300 DPI)</option>
-                        <option value="600">Høj (600 DPI)</option>
-                      </select>
-                    </label>
-
-                    <label class="field">
-                      <span>
-                        Magnetisk deklination (per side)
-                        <span
-                          class="tooltip"
-                          data-tooltip="Tilføjer information om magnetisk deklination til kortsiderne."
-                          aria-label="Tilføjer information om magnetisk deklination til kortsiderne."
-                        >?</span>
-                      </span>
-                      <input type="checkbox" id="declinationToggle" checked />
-                    </label>
-                    <div class="layer-card">
-                      <label class="field">
-                        <span>
-                          Optimer filstørrelse
-                          <span
-                            class="tooltip"
-                            data-tooltip="Lav kortlag om til JPEG i stedet for PNG for at minimere filstørrelsen."
-                            aria-label="Lav kortlag om til JPEG i stedet for PNG for at minimere filstørrelsen."
-                          >?</span>
-                        </span>
-                        <input type="checkbox" id="pdfJpegToggle" checked />
-                        <div class="range-field hidden" id="jpegQualityGroup">
-                          <span>
-                            JPEG-kvalitet
-                            <span
-                              class="tooltip"
-                              data-tooltip="Højere værdi giver bedre kvalitet, men større filstørrelse."
-                              aria-label="Højere værdi giver bedre kvalitet, men større filstørrelse."
-                            >?</span>
-                          </span>
-                          <div class="range-row">
-                            <input
-                              type="range"
-                              id="jpegQuality"
-                              min="0.6"
-                              max="1"
-                              step="0.05"
-                              value="0.9"
-                            />
-                            <output id="jpegQualityValue" for="jpegQuality">90%</output>
-                          </div>
-                        </div>
-                      </label>
+              <details class="control-section control-section-collapsible" id="pdfExportSection">
+                <summary class="section-header section-summary">
+                  <span>PDF-eksport</span>
+                </summary>
+                <div class="section-grid">
+                  <label class="field">
+                    <span>
+                      Opløsning (DPI)
+                      <span
+                        class="tooltip"
+                        data-tooltip="Højere DPI giver skarpere PDF'er, men tager længere tid og giver større filer."
+                        aria-label="Højere DPI giver skarpere PDF'er, men tager længere tid og giver større filer."
+                      >?</span>
+                    </span>
+                    <select id="dpi" required>
+                      <option value="150">Lav (150 DPI)</option>
+                      <option value="300" selected>Mellem (300 DPI)</option>
+                      <option value="600">Høj (600 DPI)</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>
+                      Gråtone
+                      <span class="tooltip"
+                        data-tooltip="Lav kortet i gråtoner for sort-hvid print."
+                        aria-label="Lav kortet i gråtoner for sort-hvid print."
+                      >?</span>
+                    </span>
+                    <input type="checkbox" id="greyscaleToggle" />
+                  </label>
+                  <label class="field toggle-field">
+                    <input type="checkbox" id="pdfJpegToggle" checked />
+                    <span>Optimer filstørrelse</span>
+                    <span
+                      class="tooltip"
+                      data-tooltip="Lav kortlag om til JPEG i stedet for PNG for at minimere filstørrelsen."
+                      aria-label="Lav kortlag om til JPEG i stedet for PNG for at minimere filstørrelsen."
+                    >?</span>
+                  </label>
+                  <div class="field range-field hidden" id="jpegQualityGroup">
+                    <span>
+                      JPEG-kvalitet
+                      <span
+                        class="tooltip"
+                        data-tooltip="Højere værdi giver bedre kvalitet, men større filstørrelse."
+                        aria-label="Højere værdi giver bedre kvalitet, men større filstørrelse."
+                      >?</span>
+                    </span>
+                    <div class="range-row">
+                      <input
+                        type="range"
+                        id="jpegQuality"
+                        min="0.6"
+                        max="1"
+                        step="0.05"
+                        value="0.9"
+                      />
+                      <output id="jpegQualityValue" for="jpegQuality">90%</output>
                     </div>
-                    <label class="field">
-                      <span>
-                        Overlap (%)
-                        <span
-                          class="tooltip"
-                          data-tooltip="Overlap mellem tilstødende sider. Højere værdier giver mere fælles område. Bruges til automatisk sidelayout."
-                          aria-label="Overlap mellem tilstødende sider. Højere værdier giver mere fælles område. Bruges til automatisk sidelayout."
-                        >?</span>
-                      </span>
-                      <div class="range-field">
-                        <div class="range-row">
-                          <input
-                            type="range"
-                            id="overlap"
-                            min="0"
-                            max="20"
-                            step="1"
-                            value="5"
-                          />
-                          <output id="overlapValue" for="overlap">5%</output>
-                        </div>
-                      </div>
-                    </label>
-                    <label class="field">
-                      <span>
-                        Sikkerhedsmargin (%)
-                        <span
-                          class="tooltip"
-                          data-tooltip="Mindste afstand fra spor til kant. Højere værdier giver mere terræn omkring sporet. Bruges til automatisk sidelayout."
-                          aria-label="Mindste afstand fra spor til kant. Højere værdier giver mere terræn omkring sporet. Bruges til automatisk sidelayout."
-                        >?</span>
-                      </span>
-                      <div class="range-field">
-                        <div class="range-row">
-                          <input
-                            type="range"
-                            id="margin"
-                            min="0"
-                            max="20"
-                            step="1"
-                            value="15"
-                          />
-                          <output id="marginValue" for="margin">15%</output>
-                        </div>
-                      </div>
-                    </label>
                   </div>
-                </details>
-              </div>
+                </div>
+              </details>
 
               <div class="button-row sticky-render">
                 <div class="render-status" id="renderStatus" aria-live="polite">
@@ -536,6 +586,7 @@
         <svg class="map-hint-outline" aria-hidden="true">
           <rect id="mapHintOutlinePrimary" x="0" y="0" width="0" height="0" rx="999" ry="999"></rect>
           <rect id="mapHintOutlineSecondary" x="0" y="0" width="0" height="0" rx="16" ry="16"></rect>
+          <rect id="mapHintOutlineTertiary" x="0" y="0" width="0" height="0" rx="8" ry="8"></rect>
         </svg>
         <div class="map-hint-highlight" aria-hidden="true"></div>
         <div class="map-hint-highlight secondary" aria-hidden="true"></div>
@@ -545,6 +596,10 @@
         <div class="map-hint-tip map-hint-tip-secondary" id="mapHintTipSecondary">
           <strong>Eller klik her</strong>
           <span>for manuelt at tilføje sider.</span>
+        </div>
+        <div class="map-hint-tip map-hint-tip-tertiary" id="mapHintTipTertiary">
+          <strong>Tegn din rute her</strong>
+          <span>Vi laver automatisk et layout ud fra sporet.</span>
         </div>
       </div>
     </div>
@@ -578,6 +633,6 @@
       integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
       crossorigin=""
     ></script>
-    <script type="module" src="main.js"></script>
+    <script type="module" src="app.js"></script>
   </body>
 </html>
