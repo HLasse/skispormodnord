@@ -15,9 +15,162 @@ import {
 
 const L = window.L;
 const TRACK_HOVER_FALLBACK_COLOR = "#ff7a45";
+const SENTINEL_WMTS_CAPABILITIES_URL = "https://tiles.maps.eox.at/wmts/1.0.0/WMTSCapabilities.xml";
+const SENTINEL_WMTS_TILE_URL_TEMPLATE = "https://tiles.maps.eox.at/wmts/1.0.0/{layer}/default/g/{z}/{y}/{x}.jpg";
+const SENTINEL_WMTS_PROXY_ENDPOINT = "/.netlify/functions/sentinel-wmts";
+const SENTINEL_WMTS_PROXY_URL_TEMPLATE = `${SENTINEL_WMTS_PROXY_ENDPOINT}?layer={layer}&z={z}&x={x}&y={y}`;
+const SENTINEL_FALLBACK_LAYER_YEAR = 2024;
+const SENTINEL_FALLBACK_MAX_ZOOM = 14;
+const SATELLITE_OPACITY = 1;
+
+let sentinelWmtsConfigPromise = null;
 
 function pointsToLatLngs(pointsLonLat) {
   return (pointsLonLat ?? []).map(([lon, lat]) => [lat, lon]);
+}
+
+function getElementsByLocalName(root, localName) {
+  return Array.from(root.getElementsByTagNameNS("*", localName));
+}
+
+function firstTextByLocalName(root, localName) {
+  const el = root.getElementsByTagNameNS("*", localName)[0];
+  const text = el?.textContent?.trim();
+  return text || null;
+}
+
+function getSatelliteAttribution(year) {
+  const dataYear = Number.isFinite(year) ? String(year) : "latest";
+  return `Sentinel-2 cloudless (${dataYear}) by <a href="https://s2maps.eu/" target="_blank" rel="noopener">s2maps.eu</a> | &copy; <a href="https://eox.at/" target="_blank" rel="noopener">EOX IT Services GmbH</a> | Contains modified Copernicus Sentinel data`;
+}
+
+function parseSentinelWmtsConfig(xmlText) {
+  const doc = new DOMParser().parseFromString(xmlText, "application/xml");
+  const layerEls = getElementsByLocalName(doc, "Layer");
+  const yearlyLayers = [];
+
+  layerEls.forEach((layerEl) => {
+    const id = firstTextByLocalName(layerEl, "Identifier");
+    if (!id) return;
+    const match = /^s2cloudless-(\d{4})_3857$/u.exec(id);
+    if (!match) return;
+    const tileMatrixSetIds = getElementsByLocalName(layerEl, "TileMatrixSet")
+      .map((el) => (el.textContent || "").trim())
+      .filter(Boolean);
+    if (!tileMatrixSetIds.includes("g")) return;
+    yearlyLayers.push({ id, year: Number(match[1]) });
+  });
+
+  yearlyLayers.sort((a, b) => a.year - b.year);
+  const latest = yearlyLayers[yearlyLayers.length - 1] || null;
+  if (!latest) {
+    throw new Error("No Sentinel-2 yearly WebMercator layer found in WMTS capabilities.");
+  }
+
+  let maxZoom = SENTINEL_FALLBACK_MAX_ZOOM;
+  const matrixSetEls = getElementsByLocalName(doc, "TileMatrixSet");
+  const matrixSetEl = matrixSetEls.find((el) => firstTextByLocalName(el, "Identifier") === "g");
+  if (matrixSetEl) {
+    const zoomLevels = getElementsByLocalName(matrixSetEl, "TileMatrix")
+      .map((tileMatrixEl) => {
+        const id = firstTextByLocalName(tileMatrixEl, "Identifier");
+        const parsed = Number(id);
+        return Number.isFinite(parsed) ? parsed : null;
+      })
+      .filter((value) => value !== null);
+    if (zoomLevels.length) {
+      maxZoom = Math.max(...zoomLevels);
+    }
+  }
+
+  return {
+    layerId: latest.id,
+    year: latest.year,
+    maxZoom,
+  };
+}
+
+async function fetchSentinelCapabilities(useProxy) {
+  const url = useProxy
+    ? `${SENTINEL_WMTS_PROXY_ENDPOINT}?request=GetCapabilities`
+    : SENTINEL_WMTS_CAPABILITIES_URL;
+  const response = await fetch(url, { mode: "cors" });
+  if (!response.ok) {
+    throw new Error(`Sentinel capabilities request failed (${response.status}).`);
+  }
+  return response.text();
+}
+
+function fallbackSentinelConfig(useProxy = false) {
+  return {
+    layerId: `s2cloudless-${SENTINEL_FALLBACK_LAYER_YEAR}_3857`,
+    year: SENTINEL_FALLBACK_LAYER_YEAR,
+    maxZoom: SENTINEL_FALLBACK_MAX_ZOOM,
+    useProxy,
+  };
+}
+
+async function getSentinelWmtsConfig() {
+  if (sentinelWmtsConfigPromise) return sentinelWmtsConfigPromise;
+
+  sentinelWmtsConfigPromise = (async () => {
+    try {
+      const directXml = await fetchSentinelCapabilities(false);
+      const parsed = parseSentinelWmtsConfig(directXml);
+      return { ...parsed, useProxy: false };
+    } catch (directErr) {
+      try {
+        const proxiedXml = await fetchSentinelCapabilities(true);
+        const parsed = parseSentinelWmtsConfig(proxiedXml);
+        return { ...parsed, useProxy: true };
+      } catch (proxyErr) {
+        console.warn("Falling back to default Sentinel-2 layer config:", proxyErr || directErr);
+        return fallbackSentinelConfig(false);
+      }
+    }
+  })();
+
+  return sentinelWmtsConfigPromise;
+}
+
+function buildSentinelTileTemplate(layerId, useProxy) {
+  if (useProxy) {
+    return SENTINEL_WMTS_PROXY_URL_TEMPLATE.replace("{layer}", layerId);
+  }
+  return SENTINEL_WMTS_TILE_URL_TEMPLATE.replace("{layer}", layerId);
+}
+
+async function ensureSatellitePreviewLayer() {
+  if (!state.mapInstance || !L) return null;
+  if (state.satellitePreviewLayer) return state.satellitePreviewLayer;
+
+  const config = await getSentinelWmtsConfig();
+  state.satellitePreviewYear = config.year ?? null;
+
+  const layer = L.tileLayer(buildSentinelTileTemplate(config.layerId, config.useProxy), {
+    maxZoom: config.maxZoom || SENTINEL_FALLBACK_MAX_ZOOM,
+    minZoom: 0,
+    crossOrigin: true,
+    pane: "tilePane",
+    zIndex: 250,
+    opacity: SATELLITE_OPACITY,
+    attribution: getSatelliteAttribution(config.year),
+  });
+
+  if (!config.useProxy) {
+    let switchedToProxy = false;
+    layer.on("tileerror", () => {
+      if (switchedToProxy) return;
+      switchedToProxy = true;
+      const proxyTemplate = buildSentinelTileTemplate(config.layerId, true);
+      layer.setUrl(proxyTemplate);
+      sentinelWmtsConfigPromise = Promise.resolve({ ...config, useProxy: true });
+      console.warn("Sentinel WMTS switched to proxy fallback after direct tile error.");
+    });
+  }
+
+  state.satellitePreviewLayer = layer;
+  return layer;
 }
 
 // --- Map initialization ---
@@ -27,22 +180,20 @@ function pointsToLatLngs(pointsLonLat) {
  * @param {Object} callbacks - Callback functions to avoid importing from ui-controller
  * @param {Function} callbacks.onMapClick - Called when map background is clicked (deselect page)
  * @param {Function} callbacks.onMapMove - Called on zoomend/moveend (update selection bar)
- * @param {Function} callbacks.onHintDismiss - Called to dismiss the map hint
- * @param {Function} callbacks.isHintDismissed - Returns whether hint was already dismissed
- * @param {Function} callbacks.updateHintHighlight - Updates the hint highlight positions
+ * @param {Function} callbacks.onHintDismiss - Called to dismiss the first-run highlights
+ * @param {Function} callbacks.isHintDismissed - Returns whether first-run highlights were already dismissed
+ * @param {Function} callbacks.updateHintHighlight - Updates the first-run highlight state
  */
 export function initMap(callbacks) {
   const mapEl = document.getElementById("map");
   const selectionBarEl = document.getElementById("selectionBar");
-  const mapHintEl = document.getElementById("mapHint");
-  const sidebarEl = document.getElementById("sidebar");
 
   if (state.mapInstance || !mapEl) return;
   if (!L) {
     return;
   }
   state.mapInstance = L.map(mapEl, {
-    zoomControl: true,
+    zoomControl: false,
     zoomSnap: 0.5,
     renderer: L.svg(),
   });
@@ -52,10 +203,17 @@ export function initMap(callbacks) {
   }
   // Use composite tile layer for multi-country support
   // Falls back to Norway for areas outside border polygons
-  createCompositeTileLayer({
+  state.baseMapLayer = createCompositeTileLayer({
     defaultProvider: CURRENT_PROVIDER,
   }).addTo(state.mapInstance);
   state.mapInstance.setView([64.5, 11.0], 5);
+  L.control.scale({
+    position: "bottomleft",
+    metric: true,
+    imperial: false,
+    maxWidth: 120,
+    updateWhenIdle: false,
+  }).addTo(state.mapInstance);
 
   state.pageLayerGroup = L.layerGroup().addTo(state.mapInstance);
   updateRouteOverlays();
@@ -74,44 +232,59 @@ export function initMap(callbacks) {
     if (callbacks.onMapMove) callbacks.onMapMove();
   });
 
-  if (mapHintEl) {
-    if (callbacks.isHintDismissed && callbacks.isHintDismissed()) {
-      mapHintEl.classList.add("hidden");
-      document.body.classList.remove("map-hint-active");
-    } else {
-      document.body.classList.add("map-hint-active");
-      if (callbacks.updateHintHighlight) callbacks.updateHintHighlight();
-      const hintEvents = [
-        "mousedown",
-        "touchstart",
-        "zoomstart",
-        "movestart",
-        "dragstart",
-        "click",
-      ];
-      const sidebarEvents = ["mousedown", "touchstart", "click", "scroll"];
-      const handleHintDismiss = () => {
-        if (mapHintEl.classList.contains("hidden")) return;
-        if (callbacks.onHintDismiss) callbacks.onHintDismiss();
-        hintEvents.forEach((eventName) =>
-          state.mapInstance.off(eventName, handleHintDismiss)
-        );
-        if (sidebarEl) {
-          sidebarEvents.forEach((eventName) =>
-            sidebarEl.removeEventListener(eventName, handleHintDismiss)
-          );
-        }
-      };
-      hintEvents.forEach((eventName) =>
-        state.mapInstance.on(eventName, handleHintDismiss)
-      );
-      if (sidebarEl) {
-        sidebarEvents.forEach((eventName) =>
-          sidebarEl.addEventListener(eventName, handleHintDismiss)
-        );
-      }
-    }
+  if (callbacks.updateHintHighlight) {
+    callbacks.updateHintHighlight();
   }
+
+  if (!(callbacks.isHintDismissed && callbacks.isHintDismissed())) {
+    const hintEvents = [
+      "mousedown",
+      "touchstart",
+      "zoomstart",
+      "movestart",
+      "dragstart",
+      "click",
+    ];
+    const handleHintDismiss = () => {
+      if (callbacks.isHintDismissed && callbacks.isHintDismissed()) return;
+      if (callbacks.onHintDismiss) callbacks.onHintDismiss();
+      hintEvents.forEach((eventName) =>
+        state.mapInstance.off(eventName, handleHintDismiss)
+      );
+    };
+    hintEvents.forEach((eventName) =>
+      state.mapInstance.on(eventName, handleHintDismiss)
+    );
+  }
+}
+
+export async function setSatellitePreviewEnabled(enabled) {
+  state.satellitePreviewEnabled = Boolean(enabled);
+  if (!state.mapInstance || !L) return false;
+
+  if (!state.satellitePreviewEnabled) {
+    if (state.satellitePreviewLayer && state.mapInstance.hasLayer(state.satellitePreviewLayer)) {
+      state.mapInstance.removeLayer(state.satellitePreviewLayer);
+    }
+    return false;
+  }
+
+  let layer;
+  try {
+    layer = await ensureSatellitePreviewLayer();
+  } catch (error) {
+    state.satellitePreviewEnabled = false;
+    throw error;
+  }
+  if (!layer) return false;
+  if (!state.mapInstance.hasLayer(layer)) {
+    layer.addTo(state.mapInstance);
+  }
+  return true;
+}
+
+export function getSatellitePreviewYear() {
+  return state.satellitePreviewYear;
 }
 
 // --- Track layer ---
@@ -353,9 +526,45 @@ export function selectPage(index, anchorPoint, updateSelectionBarFn) {
 
 function rescueSelectionBar(selectionBarEl) {
   selectionBarEl.classList.add("hidden");
+  selectionBarEl.style.removeProperty("transform");
   const overlay = document.querySelector(".map-overlay");
   if (overlay && selectionBarEl.parentElement !== overlay) {
     overlay.appendChild(selectionBarEl);
+  }
+}
+
+function clampSelectionBarToViewport(selectionBarEl) {
+  if (!selectionBarEl || selectionBarEl.classList.contains("hidden")) return;
+
+  const viewportWidth = state.shell?.viewportWidth || window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewportHeight = state.shell?.viewportHeight || window.innerHeight || document.documentElement.clientHeight || 0;
+  const viewportTop = state.shell?.viewportOffsetTop || 0;
+  const viewportLeft = state.shell?.viewportOffsetLeft || 0;
+  const viewportRight = viewportLeft + viewportWidth;
+  const viewportBottom = viewportTop + viewportHeight;
+  const margin = state.shell?.band === "desktop" ? 12 : 16;
+  const rect = selectionBarEl.getBoundingClientRect();
+
+  let offsetX = 0;
+  let offsetY = 0;
+
+  if (rect.left < viewportLeft + margin) {
+    offsetX += viewportLeft + margin - rect.left;
+  }
+  if (rect.right > viewportRight - margin) {
+    offsetX -= rect.right - (viewportRight - margin);
+  }
+  if (rect.top < viewportTop + margin) {
+    offsetY += viewportTop + margin - rect.top;
+  }
+  if (rect.bottom > viewportBottom - margin) {
+    offsetY -= rect.bottom - (viewportBottom - margin);
+  }
+
+  if (offsetX || offsetY) {
+    selectionBarEl.style.transform = `translate(calc(-50% + ${offsetX}px), calc(-100% + ${offsetY}px))`;
+  } else {
+    selectionBarEl.style.removeProperty("transform");
   }
 }
 
@@ -435,6 +644,7 @@ export function updateSelectionBar(anchorPoint) {
     if (selectionBarEl.parentElement !== markerEl) {
       markerEl.appendChild(selectionBarEl);
     }
+    requestAnimationFrame(() => clampSelectionBarToViewport(selectionBarEl));
   }
 }
 

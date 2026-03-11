@@ -26,6 +26,8 @@ const state = {
 
   // Map state
   mapInstance: null,
+  baseMapLayer: null,
+  satellitePreviewLayer: null,
   trackLayer: null,
   trackHoverLayer: null,
   pageLayerGroup: null,
@@ -37,6 +39,8 @@ const state = {
   // Overlay state
   skiRoutesLayer: null,
   hikeRoutesLayer: null,
+  dkFriluftsdataRouteVectorLayer: null,
+  dkFriluftsdataFacilityVectorLayer: null,
   heightOverlayLayers: new Map(),
   weakIceOverlayLayers: new Map(),
   heightOverlayBounds: null,
@@ -56,6 +60,17 @@ const state = {
   dragListenersActive: false,
   confirmResolver: null,
   pagePreviewsVisible: true,
+  satellitePreviewEnabled: false,
+  satellitePreviewYear: null,
+  shell: {
+    band: "desktop",
+    drawerOpen: true,
+    overlay: false,
+    viewportWidth: 0,
+    viewportHeight: 0,
+    viewportOffsetTop: 0,
+    viewportOffsetLeft: 0,
+  },
 
   // Worker state
   gpxWorker: null,
@@ -77,8 +92,6 @@ const state = {
   drawRedoStack: [],        // Array of redo command objects
   drawAppendToEnd: true,    // true = append new points to end; false = prepend to start
   drawSelectedPoint: null,  // Index of currently selected waypoint (for action bar)
-  drawFreehandActive: false,
-  drawFreehandBuffer: [],   // Buffer for freehand points before simplification
 };
 
 export default state;

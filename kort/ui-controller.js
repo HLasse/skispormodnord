@@ -3,7 +3,6 @@
 //               overlays.js, map-manager.js, utils.js, providers/config.js
 // All DOM element lookups happen inside functions, NOT at module level (avoid load-order issues).
 
-import { PROVIDERS } from "./providers/config.js";
 import {
   DEFAULT_LAYER,
   DEFAULT_DPI, DEFAULT_JPEG_QUALITY,
@@ -16,6 +15,7 @@ import { state } from "./state.js";
 import {
   bboxFromCenter,
   formatDistance,
+  formatScaleLabel,
 } from "./utils.js";
 import {
   proj4,
@@ -33,8 +33,10 @@ import {
 } from "./pdf-renderer.js";
 import {
   updateRouteOverlays, updateHeightOverlays, updateWeakIceOverlays,
+  updateDkFriluftsdataOverlays,
   refreshHeightOverlays, effectiveHeightOpacity, effectiveWeakIceOpacity,
   getSelectedHeightLayers, getSelectedWeakIceLayers,
+  getSelectedDkFriluftsdataRouteTypes, getSelectedDkFriluftsdataFacilityTypes,
 } from "./overlays.js";
 import {
   initMap,
@@ -44,7 +46,9 @@ import {
   clearPageOverlays, ensurePageIds, renderPageOverlays, fitMapToLayout,
   updatePageStyles, selectPage, updateSelectionBar, updatePageLayerBounds,
   getContainerPointFromEvent, startDrag, handleDocumentMove, stopDrag,
+  setSatellitePreviewEnabled, getSatellitePreviewYear,
 } from "./map-manager.js";
+import { getPointProviders } from "./providers/borders.js";
 import {
   initDrawing, toggleDrawMode, clearDrawnRoute,
   undo as drawUndo, redo as drawRedo,
@@ -54,31 +58,41 @@ import {
 
 const L = window.L;
 
+const SHELL_BREAKPOINTS = Object.freeze({
+  desktopMin: 961,
+  tabletMin: 721,
+});
+
+const SHELL_RELAYOUT_FALLBACK_MS = 420;
+
 // Module-scoped references populated in initUI()
 let renderStatusEl, statusTextEl, spinnerEl, progressEl, fileMetaEl, dropzoneEl;
-let downloadLink, renderBtn, renderProgressEl;
-let mapHintEl, mapHintScrim, mapHintScrimPath, mapHintOutline;
-let mapHintOutlinePrimary, mapHintOutlineSecondary, mapHintOutlineTertiary;
-let mapHintTipPrimaryEl, mapHintTipSecondaryEl, mapHintTipTertiaryEl;
+let downloadLink, renderBtn, renderBtnLabelEl, renderBtnSummaryEl, renderProgressEl;
 let mapToastEl, mapToastTextEl, mapToastCloseEl;
 let selectionBarEl, selectionSelectEl, orientationToggleEl;
 let removePageBtn, lockToggleBtn, lockAllBtn, addPageBtn, togglePagePreviewsBtn;
-let colorPickerEl, sidebarEl, sidebarToggleEl, mapPanelEl;
+let toggleSatellitePreviewBtn;
+let colorPickerEl, sidebarEl, sidebarToggleEl, sidebarBackdropEl, sidebarReopenBtnEl, mapPanelEl, layoutEl;
 let confirmModalEl, confirmTextEl, confirmAcceptBtn, confirmCancelBtn;
-let skiRoutesToggleEl, hikeRoutesToggleEl, heightLayerToggleEls;
+let skiRoutesToggleEl, hikeRoutesToggleEl, dkRekreativeRoutesToggleEl, dkRekreativeFacilitiesToggleEl, heightLayerToggleEls;
 let weakIceToggleEl, heightOpacityGroupEl, heightOpacityEl, heightOpacityValueEl;
 let weakIceOpacityGroupEl, weakIceOpacityEl, weakIceOpacityValueEl;
+let dkRouteTypeSelectEl;
+let dkFacilityTypeSelectEl;
 let heightMaskGroupEl, heightMaskGreenAEl, heightMaskGreenBEl;
 let overlapValueEl, marginValueEl;
 let trackOpacityEl, trackOpacityValueEl, trackWidthEl, trackWidthValueEl, trackControlsEl;
 let pdfJpegToggleEl, jpegQualityGroupEl, jpegQualityEl, jpegQualityValueEl;
-let overlayTabsEl, overlayContentsEl, scaleWarningEl;
+let overlayTabsEl, overlayContentsEl;
 let greyscaleToggleEl;
+let pdfRulerToggleEl;
 let controlsForm, fileInput;
 let drawToggleBtn, drawReverseBtn, drawClearBtn;
 let drawPointActionBar, drawDeletePointBtn;
 let drawExportSection, exportDrawnBtn, exportMergedBtn;
-let sideinddelingSectionEl;
+let mapZoomControlsEl, zoomInBtn, zoomOutBtn;
+let sideinddelingSectionEl, formatTrackSectionEl, trackStyleSectionEl;
+let phaseEntryEl, phaseCustomizeEl, phaseExportEl;
 
 // Module-local store for original uploaded points (before merging with drawn route)
 let _uploadedPoints = null;
@@ -88,6 +102,13 @@ let _draggedUploadedTrackId = null;
 let _dropTargetTrackId = null;
 let _dropInsertBefore = true;
 let _suppressRowFocusClick = false;
+let _overlayAutoFocusRequestId = 0;
+let shellSyncFrame = null;
+let shellSyncWaitForTransition = false;
+let shellRelayoutFrame = null;
+let shellRelayoutTimeout = null;
+let shellRelayoutCleanup = null;
+let shellViewportListenersBound = false;
 
 // Alias state properties for shorter access
 const selections = state.selections;
@@ -127,12 +148,10 @@ function isMapHintDismissed() {
 }
 
 function dismissMapHint() {
-  if (!mapHintEl) return;
-  mapHintEl.classList.add("hidden");
+  [dropzoneEl, addPageBtn, drawToggleBtn, sidebarReopenBtnEl].forEach((element) => {
+    element?.classList.remove("map-hint-target");
+  });
   document.body.classList.remove("map-hint-active");
-  if (dropzoneEl) {
-    dropzoneEl.style.background = "";
-  }
   try {
     sessionStorage.setItem(MAP_HINT_SESSION_KEY, "1");
   } catch (error) {
@@ -189,8 +208,8 @@ function showAutoLayoutToast(pageCount) {
 
 function showManualLayoutToast() {
   if (!shouldShowToast(MAP_TOAST_MANUAL_KEY)) return;
-  if (mapHintEl && !mapHintEl.classList.contains("hidden")) return;
-  showMapToast("Træk i siden for at justere. Klik for at slette eller ændre orientering.");
+  if (!isMapHintDismissed()) return;
+  showMapToast("Træk siden for at flytte den. Klik for at slette eller ændre orientering.");
   markToastShown(MAP_TOAST_MANUAL_KEY);
 }
 
@@ -215,180 +234,51 @@ function setPagePreviewVisibility(visible) {
   updateSelectionBar();
 }
 
-// --- Hint highlight ---
+function updateSatellitePreviewToggleUI() {
+  const enabled = state.satellitePreviewEnabled === true;
+  const year = getSatellitePreviewYear();
+  const yearSuffix = year ? ` (${year})` : "";
 
-function positionHintTooltip(
-  tooltipEl,
-  targetRect,
-  gap,
-  viewportW,
-  viewportH,
-  placement = "vertical"
-) {
-  if (!tooltipEl) return;
-  const tipRect = tooltipEl.getBoundingClientRect();
-  const width = tipRect.width || 240;
-  const height = tipRect.height || 60;
-  let x = targetRect.left + targetRect.width / 2 - width / 2;
-  let y = targetRect.top - height - gap;
-  if (placement === "right") {
-    x = targetRect.right + gap;
-    y = targetRect.top + targetRect.height / 2 - height / 2;
-    if (x + width > viewportW - 12) {
-      x = targetRect.left - width - gap;
-    }
-  } else if (y < 12) {
-    y = targetRect.bottom + gap;
+  if (toggleSatellitePreviewBtn) {
+    toggleSatellitePreviewBtn.classList.toggle("is-active", enabled);
+    toggleSatellitePreviewBtn.classList.toggle("is-loading", false);
+    toggleSatellitePreviewBtn.setAttribute("aria-pressed", String(enabled));
+    const actionLabel = enabled ? "Skjul satellitlag" : "Vis satellitlag";
+    toggleSatellitePreviewBtn.setAttribute("aria-label", `${actionLabel}${yearSuffix}`);
+    toggleSatellitePreviewBtn.title = `${actionLabel}${yearSuffix} (S)`;
   }
-  const maxX = viewportW - width - 12;
-  const maxY = viewportH - height - 12;
-  x = Math.min(Math.max(12, x), maxX);
-  y = Math.min(Math.max(12, y), maxY);
-  tooltipEl.style.setProperty("--hint-tip-x", `${x}px`);
-  tooltipEl.style.setProperty("--hint-tip-y", `${y}px`);
+}
+
+async function toggleSatellitePreview() {
+  if (!toggleSatellitePreviewBtn) return;
+  const nextEnabled = !state.satellitePreviewEnabled;
+  toggleSatellitePreviewBtn.classList.add("is-loading");
+  toggleSatellitePreviewBtn.disabled = true;
+  try {
+    const enabled = await setSatellitePreviewEnabled(nextEnabled);
+    state.satellitePreviewEnabled = enabled;
+    if (nextEnabled && !enabled) {
+      showMapToast("Satellitlag kunne ikke aktiveres.");
+    }
+  } catch (error) {
+    state.satellitePreviewEnabled = false;
+    console.warn("Failed to toggle satellite preview layer:", error);
+    showMapToast("Satellitlag kunne ikke hentes.");
+  } finally {
+    toggleSatellitePreviewBtn.disabled = false;
+    toggleSatellitePreviewBtn.classList.remove("is-loading");
+    updateSatellitePreviewToggleUI();
+  }
 }
 
 function updateMapHintHighlight() {
-  if (!mapHintEl || !addPageBtn || !dropzoneEl) return;
-  if (mapHintEl.classList.contains("hidden")) {
-    document.body.classList.remove("map-hint-active");
-    if (dropzoneEl) {
-      dropzoneEl.style.background = "";
-    }
-    return;
-  }
-  document.body.classList.add("map-hint-active");
-  if (dropzoneEl) {
-    dropzoneEl.style.background = "transparent";
-  }
-  const viewportW = window.innerWidth;
-  const viewportH = window.innerHeight;
-  if (mapHintScrim) {
-    mapHintScrim.setAttribute("width", `${viewportW}`);
-    mapHintScrim.setAttribute("height", `${viewportH}`);
-    mapHintScrim.setAttribute("viewBox", `0 0 ${viewportW} ${viewportH}`);
-  }
-  if (mapHintOutline) {
-    mapHintOutline.setAttribute("width", `${viewportW}`);
-    mapHintOutline.setAttribute("height", `${viewportH}`);
-    mapHintOutline.setAttribute("viewBox", `0 0 ${viewportW} ${viewportH}`);
-  }
-  const btnRect = addPageBtn.getBoundingClientRect();
-  const buttonPadding = 10;
-  const buttonRadius = Number.parseFloat(
-    window.getComputedStyle(addPageBtn).borderRadius
-  ) || 12;
-  const buttonHighlightRadius = buttonRadius + 6;
-  const btnX = btnRect.left - buttonPadding;
-  const btnY = btnRect.top - buttonPadding;
-  const btnW = btnRect.width + buttonPadding * 2;
-  const btnH = btnRect.height + buttonPadding * 2;
-  mapHintEl.style.setProperty("--hint-x", `${btnX}px`);
-  mapHintEl.style.setProperty("--hint-y", `${btnY}px`);
-  mapHintEl.style.setProperty("--hint-w", `${btnW}px`);
-  mapHintEl.style.setProperty("--hint-h", `${btnH}px`);
-  mapHintEl.style.setProperty("--hint-radius", `${buttonHighlightRadius}px`);
-  const buttonCutout = roundedRectPath(btnX, btnY, btnW, btnH, buttonHighlightRadius);
-  if (mapHintOutlinePrimary) {
-    mapHintOutlinePrimary.setAttribute("x", `${btnX}`);
-    mapHintOutlinePrimary.setAttribute("y", `${btnY}`);
-    mapHintOutlinePrimary.setAttribute("width", `${btnW}`);
-    mapHintOutlinePrimary.setAttribute("height", `${btnH}`);
-    mapHintOutlinePrimary.setAttribute("rx", `${buttonHighlightRadius}`);
-    mapHintOutlinePrimary.setAttribute("ry", `${buttonHighlightRadius}`);
-  }
-
-  const dropTarget = dropzoneEl.querySelector(".dropzone-inner") || dropzoneEl;
-  const dropRect = dropTarget.getBoundingClientRect();
-  const dropPadding = 0;
-  const dropRadius = Number.parseFloat(
-    window.getComputedStyle(dropTarget).borderRadius
-  ) || 16;
-  const dropHighlightRadius = dropRadius;
-  const dropX = dropRect.left - dropPadding;
-  const dropY = dropRect.top - dropPadding;
-  const dropW = dropRect.width + dropPadding * 2;
-  const dropH = dropRect.height + dropPadding * 2;
-  mapHintEl.style.setProperty("--hint2-x", `${dropX}px`);
-  mapHintEl.style.setProperty("--hint2-y", `${dropY}px`);
-  mapHintEl.style.setProperty("--hint2-w", `${dropW}px`);
-  mapHintEl.style.setProperty("--hint2-h", `${dropH}px`);
-  mapHintEl.style.setProperty("--hint2-radius", `${dropHighlightRadius}px`);
-  const dropCutout = roundedRectPath(dropX, dropY, dropW, dropH, dropHighlightRadius);
-  if (mapHintOutlineSecondary) {
-    mapHintOutlineSecondary.setAttribute("x", `${dropX}`);
-    mapHintOutlineSecondary.setAttribute("y", `${dropY}`);
-    mapHintOutlineSecondary.setAttribute("width", `${dropW}`);
-    mapHintOutlineSecondary.setAttribute("height", `${dropH}`);
-    mapHintOutlineSecondary.setAttribute("rx", `${dropHighlightRadius}`);
-    mapHintOutlineSecondary.setAttribute("ry", `${dropHighlightRadius}`);
-  }
-
-  let drawCutout = "";
-  if (drawToggleBtn) {
-    const drawRect = drawToggleBtn.getBoundingClientRect();
-    const drawPadding = 8;
-    const drawRadius = Number.parseFloat(
-      window.getComputedStyle(drawToggleBtn).borderRadius
-    ) || 8;
-    const drawHighlightRadius = drawRadius + 4;
-    const drawX = drawRect.left - drawPadding;
-    const drawY = drawRect.top - drawPadding;
-    const drawW = drawRect.width + drawPadding * 2;
-    const drawH = drawRect.height + drawPadding * 2;
-    drawCutout = roundedRectPath(drawX, drawY, drawW, drawH, drawHighlightRadius);
-    if (mapHintOutlineTertiary) {
-      mapHintOutlineTertiary.setAttribute("x", `${drawX}`);
-      mapHintOutlineTertiary.setAttribute("y", `${drawY}`);
-      mapHintOutlineTertiary.setAttribute("width", `${drawW}`);
-      mapHintOutlineTertiary.setAttribute("height", `${drawH}`);
-      mapHintOutlineTertiary.setAttribute("rx", `${drawHighlightRadius}`);
-      mapHintOutlineTertiary.setAttribute("ry", `${drawHighlightRadius}`);
-    }
-    if (mapHintTipTertiaryEl) {
-      mapHintTipTertiaryEl.classList.remove("hidden");
-      positionHintTooltip(
-        mapHintTipTertiaryEl,
-        drawRect,
-        12,
-        viewportW,
-        viewportH,
-        "right"
-      );
-    }
-  } else {
-    if (mapHintOutlineTertiary) {
-      mapHintOutlineTertiary.setAttribute("width", "0");
-      mapHintOutlineTertiary.setAttribute("height", "0");
-    }
-    if (mapHintTipTertiaryEl) {
-      mapHintTipTertiaryEl.classList.add("hidden");
-    }
-  }
-
-  positionHintTooltip(mapHintTipPrimaryEl, dropRect, 12, viewportW, viewportH);
-  positionHintTooltip(mapHintTipSecondaryEl, btnRect, 12, viewportW, viewportH);
-
-  if (mapHintScrimPath) {
-    const base = `M0 0H${viewportW}V${viewportH}H0Z`;
-    mapHintScrimPath.setAttribute("d", `${base}${dropCutout}${buttonCutout}${drawCutout}`);
-  }
-}
-
-function roundedRectPath(x, y, w, h, r) {
-  const radius = Math.min(r, w / 2, h / 2);
-  return [
-    `M${x + radius} ${y}`,
-    `H${x + w - radius}`,
-    `A${radius} ${radius} 0 0 1 ${x + w} ${y + radius}`,
-    `V${y + h - radius}`,
-    `A${radius} ${radius} 0 0 1 ${x + w - radius} ${y + h}`,
-    `H${x + radius}`,
-    `A${radius} ${radius} 0 0 1 ${x} ${y + h - radius}`,
-    `V${y + radius}`,
-    `A${radius} ${radius} 0 0 1 ${x + radius} ${y}`,
-    "Z",
-  ].join("");
+  const active = !isMapHintDismissed();
+  document.body.classList.toggle("map-hint-active", active);
+  const shouldHighlightReopen = active && !state.shell.drawerOpen;
+  [dropzoneEl, addPageBtn, drawToggleBtn].forEach((element) => {
+    element?.classList.toggle("map-hint-target", active);
+  });
+  sidebarReopenBtnEl?.classList.toggle("map-hint-target", shouldHighlightReopen);
 }
 
 // --- Download management ---
@@ -467,17 +357,121 @@ function setProgress(activeStep, doneSteps) {
   });
 }
 
-function updateRenderButtonState() {
+function getRenderButtonLabel() {
+  if (renderBtnLabelEl) {
+    const label = renderBtnLabelEl.textContent?.trim();
+    if (label) return label;
+  }
+  if (renderBtn) {
+    const label = renderBtn.textContent?.trim();
+    if (label) return label;
+  }
+  return "Lav PDF";
+}
+
+function getRenderButtonSummaryText() {
+  const pageCount = state.layoutPages.length;
+  if (!pageCount) return "";
+  const pageLabel = pageCount === 1 ? "side" : "sider";
+  const formattedScale = formatScaleLabel(selections.scale).replace(/\./g, " ");
+  return `${pageCount} ${pageLabel} | ${selections.paper} | 1:${formattedScale}`;
+}
+
+function updateRenderButtonSummary() {
   if (!renderBtn) return;
+  const summary = getRenderButtonSummaryText();
+  if (renderBtnSummaryEl) {
+    renderBtnSummaryEl.textContent = summary;
+    renderBtnSummaryEl.classList.toggle("hidden", !summary);
+  }
+  const actionLabel = getRenderButtonLabel();
+  renderBtn.setAttribute("aria-label", summary ? `${actionLabel}. ${summary}` : actionLabel);
+}
+
+function setRenderButtonLabel(label) {
+  if (!renderBtn) return;
+  if (renderBtnLabelEl) {
+    renderBtnLabelEl.textContent = label;
+  } else {
+    renderBtn.textContent = label;
+  }
+  updateRenderButtonSummary();
+}
+
+function updateRenderButtonState() {
   const ready = Boolean(state.isLayoutReady);
-  renderBtn.disabled = !ready;
-  renderBtn.classList.toggle("ready", ready);
+  if (renderBtn) {
+    renderBtn.disabled = !ready;
+    renderBtn.classList.toggle("ready", ready);
+  }
+  updateRenderButtonSummary();
+  updateWorkflowPhases();
+}
+
+function setCollapsibleSectionState(sectionEl, { lockedOpen = false, disabled = false } = {}) {
+  if (!sectionEl) return;
+  const wasLocked = sectionEl.dataset.lockedOpen === "1";
+  sectionEl.dataset.lockedOpen = lockedOpen ? "1" : "0";
+  sectionEl.dataset.disabled = disabled ? "1" : "0";
+  sectionEl.classList.toggle("locked-open", lockedOpen);
+  sectionEl.classList.toggle("is-disabled", disabled);
+
+  if (lockedOpen) {
+    sectionEl.open = true;
+    return;
+  }
+
+  if (disabled) {
+    sectionEl.open = false;
+    return;
+  }
+
+  if (wasLocked && !lockedOpen) {
+    sectionEl.open = false;
+  }
+}
+
+function enforceCollapsibleSectionState(sectionEl) {
+  if (!sectionEl) return;
+  if (sectionEl.dataset.lockedOpen === "1" && !sectionEl.open) {
+    sectionEl.open = true;
+    return;
+  }
+  if (sectionEl.dataset.disabled === "1" && sectionEl.open) {
+    sectionEl.open = false;
+  }
 }
 
 function updateSideinddelingVisibility() {
-  if (!sideinddelingSectionEl) return;
   const hasTrack = getOrderedTrackEntries().length > 0;
-  sideinddelingSectionEl.classList.toggle("hidden", !hasTrack);
+  setCollapsibleSectionState(sideinddelingSectionEl, { disabled: !hasTrack });
+}
+
+function updateWorkflowPhases(hasTracks = getOrderedTrackEntries().length > 0) {
+  const hasPages = state.layoutPages.length > 0;
+  const hasConfiguredLayout = hasTracks || hasPages;
+
+  if (phaseCustomizeEl) {
+    phaseCustomizeEl.classList.remove("hidden");
+  }
+
+  setCollapsibleSectionState(sideinddelingSectionEl, {
+    disabled: !hasTracks,
+  });
+
+  const activePhase = !hasConfiguredLayout ? "1" : (state.isLayoutReady ? "3" : "2");
+  const activeNum = parseInt(activePhase, 10);
+  [phaseEntryEl, phaseCustomizeEl, phaseExportEl].forEach((phaseEl) => {
+    if (!phaseEl) return;
+    const phaseNum = parseInt(phaseEl.dataset.phase, 10);
+    const isActive = (phaseNum >= 2 && phaseNum <= activeNum) || phaseNum === activeNum;
+    phaseEl.classList.toggle("is-active", isActive);
+    if (isActive) {
+      phaseEl.setAttribute("aria-current", "step");
+    } else {
+      phaseEl.removeAttribute("aria-current");
+    }
+  });
 }
 
 function markLayoutCustomized(message) {
@@ -499,8 +493,13 @@ function setSegmentedActive(group, value, attr) {
 }
 
 function setTrackControlsVisible(isVisible) {
-  if (!trackControlsEl) return;
-  trackControlsEl.classList.toggle("hidden", !isVisible);
+  if (trackStyleSectionEl) {
+    trackStyleSectionEl.classList.toggle("is-disabled", !isVisible);
+  }
+  if (trackControlsEl) {
+    trackControlsEl.disabled = !isVisible;
+    trackControlsEl.setAttribute("aria-disabled", String(!isVisible));
+  }
 }
 
 function syncTrackControlsVisibility() {
@@ -508,6 +507,7 @@ function syncTrackControlsVisibility() {
   state.hasTrackData = hasTracks;
   setTrackControlsVisible(hasTracks);
   updateSideinddelingVisibility();
+  updateWorkflowPhases(hasTracks);
 }
 
 function applyDrawnTrackStyle() {
@@ -665,6 +665,108 @@ function updateWeakIceOpacityVisibility() {
   weakIceOpacityGroupEl.classList.toggle("hidden", !weakIceToggleEl.checked);
 }
 
+/* --- Denmark tag-select multi-picker --- */
+function initDkTagSelects() {
+  document.querySelectorAll(".dk-tag-select").forEach((widget) => {
+    const targetId = widget.dataset.target;
+    const toggleId = widget.dataset.toggle;
+    const selectEl = document.getElementById(targetId);
+    const toggleEl = document.getElementById(toggleId);
+    const chipsEl = widget.querySelector(".dk-tag-chips");
+    const dropdownEl = widget.querySelector(".dk-tag-dropdown");
+    const triggerBtn = widget.querySelector(".dk-tag-trigger");
+    if (!selectEl || !toggleEl || !chipsEl || !dropdownEl || !triggerBtn) return;
+
+    // Build dropdown options from the hidden <select>
+    Array.from(selectEl.options).forEach((opt) => {
+      const li = document.createElement("li");
+      li.role = "option";
+      li.className = "dk-tag-option";
+      li.dataset.value = opt.value;
+      li.innerHTML =
+        '<span class="dk-tag-option-check"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 7.5L5.5 10L11 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>' +
+        '<span>' + opt.textContent + '</span>';
+      li.addEventListener("click", (e) => {
+        e.stopPropagation();
+        toggleOption(opt.value);
+      });
+      dropdownEl.appendChild(li);
+    });
+
+    function syncFromSelect() {
+      const selected = new Set(
+        Array.from(selectEl.selectedOptions).map((o) => o.value)
+      );
+      // Update toggle checkbox
+      toggleEl.checked = selected.size > 0;
+      // Update chips
+      chipsEl.innerHTML = "";
+      selected.forEach((val) => {
+        const opt = selectEl.querySelector('option[value="' + CSS.escape(val) + '"]');
+        if (!opt) return;
+        const chip = document.createElement("span");
+        chip.className = "dk-tag-chip";
+        chip.innerHTML =
+          '<span>' + opt.textContent + '</span>' +
+          '<button type="button" class="dk-tag-chip-x" aria-label="Fjern ' + opt.textContent + '">' +
+          '<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2.5 2.5L7.5 7.5M7.5 2.5L2.5 7.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>' +
+          '</button>';
+        chip.querySelector(".dk-tag-chip-x").addEventListener("click", (e) => {
+          e.stopPropagation();
+          toggleOption(val);
+        });
+        chipsEl.appendChild(chip);
+      });
+      // Update dropdown checks
+      dropdownEl.querySelectorAll(".dk-tag-option").forEach((li) => {
+        li.classList.toggle("selected", selected.has(li.dataset.value));
+        li.setAttribute("aria-selected", String(selected.has(li.dataset.value)));
+      });
+    }
+
+    function toggleOption(value) {
+      const opt = selectEl.querySelector('option[value="' + CSS.escape(value) + '"]');
+      if (!opt) return;
+      opt.selected = !opt.selected;
+      selectEl.dispatchEvent(new Event("change", { bubbles: true }));
+      syncFromSelect();
+      updateDkFriluftsdataOverlays();
+    }
+
+    function openDropdown() {
+      widget.classList.add("open");
+      triggerBtn.setAttribute("aria-expanded", "true");
+    }
+
+    function closeDropdown() {
+      widget.classList.remove("open");
+      triggerBtn.setAttribute("aria-expanded", "false");
+    }
+
+    widget.addEventListener("click", (e) => {
+      if (e.target.closest(".dk-tag-chip-x")) return;
+      if (widget.classList.contains("open")) {
+        closeDropdown();
+      } else {
+        // Close any other open tag-selects
+        document.querySelectorAll(".dk-tag-select.open").forEach((w) => {
+          w.classList.remove("open");
+          w.querySelector(".dk-tag-trigger")?.setAttribute("aria-expanded", "false");
+        });
+        openDropdown();
+      }
+    });
+
+    // Close on outside click
+    document.addEventListener("click", (e) => {
+      if (!widget.contains(e.target)) closeDropdown();
+    });
+
+    // Initial render
+    syncFromSelect();
+  });
+}
+
 function updateHeightMaskVisibility() {
   if (!heightMaskGroupEl) return;
   const anyOn = heightLayerToggleEls.some((toggle) => toggle.checked);
@@ -806,6 +908,7 @@ function resizeManualPagesInPlace() {
     state.heightOverlayBounds = nextHeightBounds;
     refreshHeightOverlays();
   }
+  updateRenderButtonState();
 }
 
 function addPageToRight(sourceIndex) {
@@ -880,11 +983,53 @@ function callRenderPageOverlays() {
 function mapCallbacks() {
   return {
     onMapClick: () => selectPage(null, null, updateSelectionBar),
-    onMapMove: () => updateSelectionBar(),
+    onMapMove: () => {
+      updateSelectionBar();
+      updateDkFriluftsdataOverlays();
+      void syncOverlayCountryToMapCenter();
+    },
     onHintDismiss: () => dismissMapHint(),
     isHintDismissed: () => isMapHintDismissed(),
     updateHintHighlight: () => updateMapHintHighlight(),
   };
+}
+
+// --- Overlay tabs ---
+
+function setActiveOverlayCountry(country) {
+  if (!country) return;
+  overlayTabsEl.forEach((tab) => {
+    const isActive = tab.dataset.country === country;
+    tab.classList.toggle("active", isActive);
+    tab.setAttribute("aria-selected", String(isActive));
+  });
+  overlayContentsEl.forEach((content) => {
+    content.classList.toggle("active", content.dataset.country === country);
+  });
+}
+
+async function syncOverlayCountryToMapCenter() {
+  if (!state.mapInstance) return;
+  const center = state.mapInstance.getCenter();
+  if (!center) return;
+
+  const requestId = ++_overlayAutoFocusRequestId;
+  try {
+    const providers = await getPointProviders(center.lng, center.lat);
+    if (requestId !== _overlayAutoFocusRequestId) return;
+
+    let nextCountry = null;
+    if (providers.includes("dk")) {
+      nextCountry = "dk";
+    } else if (providers.includes("no")) {
+      nextCountry = "no";
+    }
+    if (nextCountry) {
+      setActiveOverlayCountry(nextCountry);
+    }
+  } catch (error) {
+    console.debug("Overlay country sync skipped:", error);
+  }
 }
 
 // --- Form value extraction ---
@@ -908,7 +1053,7 @@ function getDpiValue() {
 
 export function generateLayout(statusMessage, options = {}) {
   if (!state.cachedPoints) {
-    setStatus("Vælg en GPX-fil.");
+    setStatus("Tilføj eller tegn et spor først.");
     return;
   }
   const previousSelectedPageIndex = state.selectedPageIndex;
@@ -1184,7 +1329,7 @@ function reorderTrackEntries(draggedTrackId, targetTrackId, insertBefore) {
 }
 
 function applyTrackOrderChange() {
-  renderBtn.textContent = "Lav PDF";
+  setRenderButtonLabel("Lav PDF");
   clearDownload();
   resetLayoutState();
   updateFileMeta();
@@ -1208,7 +1353,6 @@ function applyTrackState(options = {}) {
     state.transformerState = null;
     state.projectionState = null;
     clearTrackLayer();
-    updateScaleWarning();
     updateMergedExportVisibility();
     syncTrackControlsVisibility();
     return { segments: [], trackBreakIndices: [0] };
@@ -1235,7 +1379,6 @@ function applyTrackState(options = {}) {
       clearUploadedTrackHover();
     }
   }
-  updateScaleWarning();
   updateMergedExportVisibility();
   syncTrackControlsVisibility();
 
@@ -1347,7 +1490,7 @@ function removeTrackEntry(trackId) {
   const didRemove = removeTrackFromState(trackId);
   if (!didRemove) return;
 
-  renderBtn.textContent = "Lav PDF";
+  setRenderButtonLabel("Lav PDF");
   clearDownload();
   resetLayoutState();
   updateFileMeta();
@@ -1397,7 +1540,7 @@ export async function handleFileSelection(fileOrFiles) {
   const files = normalizeSelectedFiles(fileOrFiles);
   if (!files.length) return;
 
-  renderBtn.textContent = "Lav PDF";
+  setRenderButtonLabel("Lav PDF");
   setStatus(files.length > 1 ? `Læser ${files.length} GPX-filer...` : "Læser GPX...", true);
 
   try {
@@ -1430,21 +1573,6 @@ export async function handleFileSelection(fileOrFiles) {
       resetLayoutState();
     }
   }
-}
-
-// --- Scale warning ---
-
-function updateScaleWarning() {
-  if (!scaleWarningEl) return;
-  let touchesSweden = false;
-  if (state.cachedPoints && selections.scale === 25000) {
-    const seBounds = PROVIDERS.se.bounds;
-    touchesSweden = state.cachedPoints.some(([lon, lat]) =>
-      lon >= seBounds.minLon && lon <= seBounds.maxLon &&
-      lat >= seBounds.minLat && lat <= seBounds.maxLat
-    );
-  }
-  scaleWarningEl.classList.toggle("hidden", !touchesSweden);
 }
 
 // --- Setup functions ---
@@ -1505,7 +1633,6 @@ function setupSegmentedControls() {
     }
     selections.scale = nextScale;
     setSegmentedActive(scaleGroup, String(selections.scale), "scale");
-    updateScaleWarning();
     if (state.cachedPoints) {
       generateLayout("Målestokken er ændret. Layout opdateres...", {
         preserveSelection: true,
@@ -1561,18 +1688,250 @@ function setupTrackWidth() {
   });
 }
 
-function setupSidebarToggle() {
-  if (!sidebarToggleEl || !sidebarEl) return;
-  sidebarEl.classList.add("open");
-  sidebarToggleEl.addEventListener("click", () => {
-    sidebarEl.classList.toggle("open");
-    if (state.mapInstance) {
-      setTimeout(() => {
-        state.mapInstance.invalidateSize();
-        updateMapHintHighlight();
-      }, 320);
-    }
+function getShellViewportMetrics() {
+  const visualViewport = window.visualViewport;
+  const width = Math.round(visualViewport?.width || window.innerWidth || document.documentElement.clientWidth || 0);
+  const height = Math.round(visualViewport?.height || window.innerHeight || document.documentElement.clientHeight || 0);
+  const offsetTop = Math.round(visualViewport?.offsetTop || 0);
+  const offsetLeft = Math.round(visualViewport?.offsetLeft || 0);
+
+  return {
+    width,
+    height,
+    offsetTop,
+    offsetLeft,
+  };
+}
+
+function getShellViewportWidth() {
+  return getShellViewportMetrics().width;
+}
+
+function getShellBand(width = getShellViewportWidth()) {
+  if (width >= SHELL_BREAKPOINTS.desktopMin) return "desktop";
+  if (width >= SHELL_BREAKPOINTS.tabletMin) return "tablet";
+  return "phone";
+}
+
+function getShellDefaultOpen(band) {
+  return band !== "phone";
+}
+
+function isOverlayShellBand(band) {
+  return band !== "desktop";
+}
+
+function clearShellRelayoutWaiters() {
+  if (shellRelayoutCleanup) {
+    shellRelayoutCleanup();
+    shellRelayoutCleanup = null;
+  }
+  if (shellRelayoutTimeout) {
+    window.clearTimeout(shellRelayoutTimeout);
+    shellRelayoutTimeout = null;
+  }
+  if (shellRelayoutFrame) {
+    window.cancelAnimationFrame(shellRelayoutFrame);
+    shellRelayoutFrame = null;
+  }
+}
+
+function runShellRelayout() {
+  clearShellRelayoutWaiters();
+  shellRelayoutFrame = window.requestAnimationFrame(() => {
+    shellRelayoutFrame = window.requestAnimationFrame(() => {
+      shellRelayoutFrame = null;
+      if (state.mapInstance) {
+        state.mapInstance.invalidateSize({ pan: false, animate: false });
+      }
+      updateSelectionBar();
+      updateMapHintHighlight();
+    });
   });
+}
+
+function scheduleShellRelayout(options = {}) {
+  const { waitForTransition = false } = options;
+  clearShellRelayoutWaiters();
+
+  if (!waitForTransition || !sidebarEl) {
+    runShellRelayout();
+    return;
+  }
+
+  const listeners = [];
+  const cleanup = () => {
+    listeners.forEach(({ element, handler }) => element.removeEventListener("transitionend", handler));
+  };
+  shellRelayoutCleanup = cleanup;
+
+  const finish = () => {
+    cleanup();
+    shellRelayoutCleanup = null;
+    if (shellRelayoutTimeout) {
+      window.clearTimeout(shellRelayoutTimeout);
+      shellRelayoutTimeout = null;
+    }
+    runShellRelayout();
+  };
+
+  const onTransitionEnd = (event) => {
+    if (event.target !== sidebarEl && event.target !== sidebarBackdropEl) return;
+    if (event.propertyName && !["transform", "opacity", "visibility"].includes(event.propertyName)) return;
+    finish();
+  };
+
+  [sidebarEl, sidebarBackdropEl].filter(Boolean).forEach((element) => {
+    listeners.push({ element, handler: onTransitionEnd });
+    element.addEventListener("transitionend", onTransitionEnd);
+  });
+
+  shellRelayoutTimeout = window.setTimeout(finish, SHELL_RELAYOUT_FALLBACK_MS);
+}
+
+function syncShellAria() {
+  const expanded = String(state.shell.drawerOpen);
+  [sidebarToggleEl, sidebarReopenBtnEl].forEach((element) => {
+    if (!element) return;
+    element.setAttribute("aria-controls", "sidebar");
+    element.setAttribute("aria-expanded", expanded);
+  });
+  if (sidebarBackdropEl) {
+    const hidden = !state.shell.overlay || !state.shell.drawerOpen;
+    sidebarBackdropEl.setAttribute("aria-hidden", String(hidden));
+    if ("inert" in sidebarBackdropEl) {
+      sidebarBackdropEl.inert = hidden;
+    }
+  }
+}
+
+function syncShellDatasets() {
+  const values = {
+    shellBand: state.shell.band,
+    drawerMode: state.shell.overlay ? "overlay" : "pinned",
+    drawerOpen: state.shell.drawerOpen ? "true" : "false",
+    shellOverlay: state.shell.overlay ? "true" : "false",
+  };
+  [document.documentElement, document.body, layoutEl, mapPanelEl, sidebarEl].filter(Boolean).forEach((element) => {
+    element.dataset.shellBand = values.shellBand;
+    element.dataset.drawerMode = values.drawerMode;
+    element.dataset.drawerOpen = values.drawerOpen;
+    element.dataset.shellOverlay = values.shellOverlay;
+  });
+  document.body.classList.toggle("drawer-open", state.shell.drawerOpen);
+  document.body.classList.toggle("drawer-overlay", state.shell.overlay);
+}
+
+function syncViewportCssVars() {
+  const { width, height, offsetTop, offsetLeft } = getShellViewportMetrics();
+  state.shell.viewportWidth = width;
+  state.shell.viewportHeight = height;
+  state.shell.viewportOffsetTop = offsetTop;
+  state.shell.viewportOffsetLeft = offsetLeft;
+  document.documentElement.style.setProperty("--app-viewport-width", `${width}px`);
+  document.documentElement.style.setProperty("--app-viewport-height", `${height}px`);
+  document.documentElement.style.setProperty("--app-viewport-offset-top", `${offsetTop}px`);
+  document.documentElement.style.setProperty("--app-viewport-offset-left", `${offsetLeft}px`);
+  document.documentElement.style.setProperty("--app-viewport-offset-bottom", `${offsetTop + height}px`);
+  document.documentElement.style.setProperty("--app-viewport-offset-right", `${offsetLeft + width}px`);
+}
+
+function applyShellState(options = {}) {
+  const { waitForTransition = false } = options;
+  const overlay = state.shell.overlay;
+  const drawerOpen = Boolean(state.shell.drawerOpen);
+
+  state.shell.drawerOpen = drawerOpen;
+  if (sidebarEl) {
+    sidebarEl.classList.toggle("open", drawerOpen);
+    sidebarEl.classList.toggle("is-overlay", overlay);
+  }
+  if (sidebarToggleEl) {
+    const hideSidebarToggle = !drawerOpen;
+    sidebarToggleEl.classList.toggle("hidden", hideSidebarToggle);
+    sidebarToggleEl.setAttribute("aria-hidden", String(hideSidebarToggle));
+    if (hideSidebarToggle) {
+      sidebarToggleEl.setAttribute("tabindex", "-1");
+    } else {
+      sidebarToggleEl.removeAttribute("tabindex");
+    }
+  }
+  if (mapPanelEl) {
+    mapPanelEl.classList.toggle("sidebar-overlay-open", overlay && drawerOpen);
+  }
+  if (sidebarBackdropEl) {
+    sidebarBackdropEl.classList.toggle("open", overlay && drawerOpen);
+  }
+  if (sidebarReopenBtnEl) {
+    sidebarReopenBtnEl.classList.toggle("hidden", drawerOpen);
+  }
+
+  syncShellDatasets();
+  syncShellAria();
+  scheduleShellRelayout({ waitForTransition });
+}
+
+function setShellDrawerOpen(nextOpen, options = {}) {
+  const { waitForTransition = true } = options;
+  const overlay = isOverlayShellBand(state.shell.band);
+  state.shell.overlay = overlay;
+  state.shell.drawerOpen = Boolean(nextOpen);
+  applyShellState({ waitForTransition });
+}
+
+function syncResponsiveShell(options = {}) {
+  const { waitForTransition = false } = options;
+  syncViewportCssVars();
+
+  const previousBand = state.shell.band;
+  const nextBand = getShellBand(state.shell.viewportWidth);
+  const bandChanged = previousBand !== nextBand;
+
+  state.shell.band = nextBand;
+  state.shell.overlay = isOverlayShellBand(nextBand);
+  if (bandChanged) {
+    state.shell.drawerOpen = getShellDefaultOpen(nextBand);
+  }
+
+  applyShellState({ waitForTransition: waitForTransition && bandChanged });
+}
+
+function queueResponsiveShellSync(options = {}) {
+  const { waitForTransition = false } = options;
+  shellSyncWaitForTransition = shellSyncWaitForTransition || waitForTransition;
+  if (shellSyncFrame) return;
+  shellSyncFrame = window.requestAnimationFrame(() => {
+    shellSyncFrame = null;
+    const shouldWaitForTransition = shellSyncWaitForTransition;
+    shellSyncWaitForTransition = false;
+    syncResponsiveShell({ waitForTransition: shouldWaitForTransition });
+  });
+}
+
+function handleShellDismiss() {
+  if (!state.shell.overlay || !state.shell.drawerOpen) return;
+  setShellDrawerOpen(false, { waitForTransition: true });
+}
+
+function setupSidebarToggle() {
+  if (!sidebarEl) return;
+
+  const onToggleClick = (event) => {
+    event.preventDefault();
+    setShellDrawerOpen(!state.shell.drawerOpen, { waitForTransition: true });
+  };
+
+  sidebarToggleEl?.addEventListener("click", onToggleClick);
+  sidebarReopenBtnEl?.addEventListener("click", onToggleClick);
+  sidebarBackdropEl?.addEventListener("click", () => handleShellDismiss());
+
+  if (!shellViewportListenersBound && window.visualViewport) {
+    window.visualViewport.addEventListener("resize", () => queueResponsiveShellSync());
+    window.visualViewport.addEventListener("scroll", () => queueResponsiveShellSync());
+    shellViewportListenersBound = true;
+  }
+
+  queueResponsiveShellSync();
 }
 
 function setupConfirmModal() {
@@ -1642,6 +2001,7 @@ function setupDrawToolbar() {
 
   // Pencil toggle
   drawToggleBtn.addEventListener("click", () => {
+    if (!isMapHintDismissed()) dismissMapHint();
     toggleDrawMode();
   });
 
@@ -1698,6 +2058,34 @@ function setupDrawToolbar() {
   }
 }
 
+function setupMapZoomControls() {
+  if (!mapZoomControlsEl || !zoomInBtn || !zoomOutBtn || !state.mapInstance) return;
+
+  const updateZoomButtons = () => {
+    const zoom = state.mapInstance.getZoom();
+    const minZoom = state.mapInstance.getMinZoom();
+    const maxZoom = state.mapInstance.getMaxZoom();
+    zoomOutBtn.disabled = Number.isFinite(minZoom) && zoom <= minZoom;
+    zoomInBtn.disabled = Number.isFinite(maxZoom) && zoom >= maxZoom;
+  };
+
+  L.DomEvent.disableClickPropagation(mapZoomControlsEl);
+
+  zoomInBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    state.mapInstance.zoomIn();
+  });
+
+  zoomOutBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    state.mapInstance.zoomOut();
+  });
+
+  state.mapInstance.on("zoomend", updateZoomButtons);
+  state.mapInstance.on("load", updateZoomButtons);
+  updateZoomButtons();
+}
+
 function setupFormSubmit() {
   controlsForm.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1708,7 +2096,7 @@ function setupFormSubmit() {
       return;
     }
     if (!ALLOWED_SCALES.has(selections.scale)) {
-      setStatus("Invalid scale selected.");
+      setStatus("Ugyldig målestok. Vælg 1:25 000, 1:50 000 eller 1:100 000.");
       return;
     }
     if (!state.layoutPages.length) {
@@ -1727,10 +2115,17 @@ function setupFormSubmit() {
     const pageImageFormat = useJpeg ? "image/jpeg" : "image/png";
     const pageImageQuality = Number.isFinite(jpegQualityValue) ? jpegQualityValue : DEFAULT_JPEG_QUALITY;
     const greyscale = Boolean(greyscaleToggleEl?.checked);
+    const showScaleRuler = Boolean(pdfRulerToggleEl?.checked);
     const heightLayers = getSelectedHeightLayers();
     const heightOpacity = effectiveHeightOpacity();
     const weakIceLayers = getSelectedWeakIceLayers();
     const weakIceOpacity = effectiveWeakIceOpacity();
+    const showDkRekreativeRoutes = Boolean(dkRekreativeRoutesToggleEl?.checked);
+    const showDkRekreativeFacilities = Boolean(dkRekreativeFacilitiesToggleEl?.checked);
+    const selectedDkRouteTypes = getSelectedDkFriluftsdataRouteTypes();
+    const selectedDkFacilityTypes = getSelectedDkFriluftsdataFacilityTypes();
+    const dkFriluftsdataRouteTypes = showDkRekreativeRoutes ? selectedDkRouteTypes : [];
+    const dkFriluftsdataFacilityTypes = showDkRekreativeFacilities ? selectedDkFacilityTypes : [];
     const trackOpacity = selections.trackOpacity;
     const trackWidth = selections.trackWidth;
     const gpxFileCount = (state.uploadedTracks ?? []).length;
@@ -1748,8 +2143,9 @@ function setupFormSubmit() {
         orientation: selections.orientation, overlap: overlapValue, margin: marginValue,
         dpi: dpiValue, showDeclination, showSkiRoutes, showHikeRoutes,
         heightLayers, heightOpacity, weakIceLayers, weakIceOpacity,
+        dkFriluftsdataRouteTypes, dkFriluftsdataFacilityTypes,
         trackOpacity, trackWidth, trackColor: selections.trackColor,
-        pageImageFormat, pageImageQuality, greyscale,
+        pageImageFormat, pageImageQuality, greyscale, showScaleRuler,
         gpxFileCount, hasDrawnTrack, pageCount, hasInsertedManualPage,
       }),
     }).catch(() => {});
@@ -1759,8 +2155,9 @@ function setupFormSubmit() {
       orientation: selections.orientation, overlap: overlapValue, margin: marginValue,
       dpi: dpiValue, showDeclination, showSkiRoutes, showHikeRoutes,
       heightLayers, heightOpacity, weakIceLayers, weakIceOpacity,
+      dkFriluftsdataRouteTypes, dkFriluftsdataFacilityTypes,
       trackOpacity, trackWidth, trackColor: selections.trackColor,
-      pageImageFormat, pageImageQuality, greyscale,
+      pageImageFormat, pageImageQuality, greyscale, showScaleRuler,
       gpxFileCount, hasDrawnTrack, pageCount, hasInsertedManualPage,
     });
 
@@ -1780,8 +2177,9 @@ function setupFormSubmit() {
         orientation: selections.orientation, overlap: overlapValue, margin: marginValue,
         layer: DEFAULT_LAYER, showDeclination, showSkiRoutes, showHikeRoutes, greyscale,
         heightLayers, heightOpacity, weakIceLayers, weakIceOpacity,
+        dkFriluftsdataRouteTypes, dkFriluftsdataFacilityTypes,
         trackOpacity, trackWidth, trackColor: selections.trackColor,
-        pageImageFormat, pageImageQuality,
+        pageImageFormat, pageImageQuality, showScaleRuler,
         pointsLonLat: renderPoints,
         trackBreakIndices,
         projection: renderProjection,
@@ -1792,12 +2190,12 @@ function setupFormSubmit() {
       setProgress(3, [1, 2, 3]);
       setStatus("PDF klar.");
       setRenderProgress(0, 1, false);
-      renderBtn.textContent = "Lav PDF igen";
+      setRenderButtonLabel("Lav PDF igen");
       renderBtn.classList.add("ready");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const friendly = message.includes("Failed to fetch")
-        ? "Kortfliser kunne ikke hentes (mulig CORS-fejl). Prøv igen eller brug et andet netværk."
+        ? "Kortfliser kunne ikke hentes. Prøv igen, eller prøv et andet netværk."
         : message;
       setStatus(`Fejl: ${friendly}`);
       setProgress(3, [1, 2]);
@@ -1825,17 +2223,9 @@ export function initUI() {
   dropzoneEl = document.getElementById("dropzone");
   downloadLink = document.getElementById("downloadLink");
   renderBtn = document.getElementById("renderBtn");
+  renderBtnLabelEl = renderBtn?.querySelector(".render-btn-label") ?? null;
+  renderBtnSummaryEl = document.getElementById("renderBtnSummary");
   renderProgressEl = document.getElementById("renderProgress");
-  mapHintEl = document.getElementById("mapHint");
-  mapHintScrim = mapHintEl?.querySelector(".map-hint-scrim") ?? null;
-  mapHintScrimPath = document.getElementById("mapHintScrimPath");
-  mapHintOutline = mapHintEl?.querySelector(".map-hint-outline") ?? null;
-  mapHintOutlinePrimary = document.getElementById("mapHintOutlinePrimary");
-  mapHintOutlineSecondary = document.getElementById("mapHintOutlineSecondary");
-  mapHintOutlineTertiary = document.getElementById("mapHintOutlineTertiary");
-  mapHintTipPrimaryEl = document.getElementById("mapHintTipPrimary");
-  mapHintTipSecondaryEl = document.getElementById("mapHintTipSecondary");
-  mapHintTipTertiaryEl = document.getElementById("mapHintTipTertiary");
   mapToastEl = document.getElementById("mapToast");
   mapToastTextEl = document.getElementById("mapToastText");
   mapToastCloseEl = document.getElementById("mapToastClose");
@@ -1847,18 +2237,26 @@ export function initUI() {
   lockAllBtn = document.getElementById("lockAllBtn");
   addPageBtn = document.getElementById("addPageBtn");
   togglePagePreviewsBtn = document.getElementById("togglePagePreviewsBtn");
+  toggleSatellitePreviewBtn = document.getElementById("toggleSatellitePreviewBtn");
   colorPickerEl = document.getElementById("colorPicker");
   sidebarEl = document.getElementById("sidebar");
   sidebarToggleEl = document.getElementById("sidebarToggle");
+  sidebarBackdropEl = document.getElementById("sidebarBackdrop") || document.querySelector("[data-sidebar-backdrop]");
+  sidebarReopenBtnEl = document.getElementById("sidebarReopenBtn") || document.querySelector("[data-sidebar-reopen]");
   mapPanelEl = document.querySelector(".map-panel");
+  layoutEl = document.querySelector(".layout");
   confirmModalEl = document.getElementById("confirmModal");
   confirmTextEl = document.getElementById("confirmText");
   confirmAcceptBtn = document.getElementById("confirmAcceptBtn");
   confirmCancelBtn = document.getElementById("confirmCancelBtn");
   skiRoutesToggleEl = document.getElementById("skiRoutesToggle");
   hikeRoutesToggleEl = document.getElementById("hikeRoutesToggle");
+  dkRekreativeRoutesToggleEl = document.getElementById("dkRekreativeRoutesToggle");
+  dkRekreativeFacilitiesToggleEl = document.getElementById("dkRekreativeFacilitiesToggle");
   heightLayerToggleEls = Array.from(document.querySelectorAll(".height-layer-toggle"));
   weakIceToggleEl = document.getElementById("weakIceToggle");
+  dkRouteTypeSelectEl = document.getElementById("dkRouteTypeSelect");
+  dkFacilityTypeSelectEl = document.getElementById("dkFacilityTypeSelect");
   heightOpacityGroupEl = document.getElementById("heightOpacityGroup");
   heightOpacityEl = document.getElementById("heightOpacity");
   heightOpacityValueEl = document.getElementById("heightOpacityValue");
@@ -1881,8 +2279,8 @@ export function initUI() {
   jpegQualityValueEl = document.getElementById("jpegQualityValue");
   overlayTabsEl = document.querySelectorAll(".overlay-tab");
   overlayContentsEl = document.querySelectorAll(".overlay-content");
-  scaleWarningEl = document.getElementById("scaleWarning");
   greyscaleToggleEl = document.getElementById("greyscaleToggle");
+  pdfRulerToggleEl = document.getElementById("pdfRulerToggle");
   controlsForm = document.getElementById("controls");
   fileInput = document.getElementById("gpxFile");
   drawToggleBtn = document.getElementById("drawToggleBtn");
@@ -1893,7 +2291,20 @@ export function initUI() {
   drawExportSection = document.getElementById("drawExportSection");
   exportDrawnBtn = document.getElementById("exportDrawnBtn");
   exportMergedBtn = document.getElementById("exportMergedBtn");
+  mapZoomControlsEl = document.getElementById("mapZoomControls");
+  zoomInBtn = document.getElementById("zoomInBtn");
+  zoomOutBtn = document.getElementById("zoomOutBtn");
+  formatTrackSectionEl = document.getElementById("formatTrackSection");
   sideinddelingSectionEl = document.getElementById("sideinddelingSection");
+  trackStyleSectionEl = document.getElementById("trackStyleSection");
+  phaseEntryEl = document.getElementById("phaseEntry");
+  phaseCustomizeEl = document.getElementById("phaseCustomize");
+  phaseExportEl = document.getElementById("phaseExport");
+
+  [formatTrackSectionEl, sideinddelingSectionEl].forEach((sectionEl) => {
+    if (!sectionEl) return;
+    sectionEl.addEventListener("toggle", () => enforceCollapsibleSectionState(sectionEl));
+  });
 
   // Setup controls
   setupSegmentedControls();
@@ -1904,16 +2315,18 @@ export function initUI() {
   setupConfirmModal();
   setupDrawToolbar();
   updatePagePreviewsToggleUI();
+  updateSatellitePreviewToggleUI();
+  initDkTagSelects();
 
   // Init map
   initMap(mapCallbacks());
-
-  // Scale warning
-  updateScaleWarning();
+  setupMapZoomControls();
+  queueResponsiveShellSync();
 
   // File input
   fileInput.addEventListener("change", () => {
     const files = Array.from(fileInput.files ?? []);
+    if (files.length && !isMapHintDismissed()) dismissMapHint();
     handleFileSelection(files);
     fileInput.value = "";
   });
@@ -2037,6 +2450,7 @@ export function initUI() {
     dropzoneEl.classList.remove("active");
     const files = Array.from(event.dataTransfer.files ?? []);
     if (files.length) {
+      if (!isMapHintDismissed()) dismissMapHint();
       try {
         const transfer = new DataTransfer();
         files.forEach((file) => transfer.items.add(file));
@@ -2081,11 +2495,17 @@ export function initUI() {
       setPagePreviewVisibility(!state.pagePreviewsVisible);
     });
   }
+  if (toggleSatellitePreviewBtn) {
+    toggleSatellitePreviewBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      await toggleSatellitePreview();
+    });
+  }
 
   if (addPageBtn) {
     addPageBtn.addEventListener("click", (event) => {
       event.stopPropagation();
-      if (mapHintEl && !mapHintEl.classList.contains("hidden")) dismissMapHint();
+      if (!isMapHintDismissed()) dismissMapHint();
       let pendingToast = false;
       if (state.mapInstance) {
         const targetZoom = 10;
@@ -2189,13 +2609,7 @@ export function initUI() {
   overlayTabsEl.forEach((tab) => {
     tab.addEventListener("click", () => {
       const country = tab.dataset.country;
-      overlayTabsEl.forEach((t) => {
-        t.classList.toggle("active", t.dataset.country === country);
-        t.setAttribute("aria-selected", t.dataset.country === country);
-      });
-      overlayContentsEl.forEach((content) => {
-        content.classList.toggle("active", content.dataset.country === country);
-      });
+      setActiveOverlayCountry(country);
     });
   });
 
@@ -2234,14 +2648,17 @@ export function initUI() {
 
   // Window events
   window.addEventListener("resize", () => {
-    if (state.mapInstance) state.mapInstance.invalidateSize();
-    updateMapHintHighlight();
-    updateSelectionBar();
+    queueResponsiveShellSync();
   });
 
   window.addEventListener("keydown", (event) => {
     const target = event.target;
     if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+
+    if (event.key === "Escape" && !confirmModalEl?.classList.contains("open") && state.shell.overlay && state.shell.drawerOpen) {
+      handleShellDismiss();
+      return;
+    }
 
     // Undo/redo for drawing mode
     if ((event.ctrlKey || event.metaKey) && event.key === "z" && !event.shiftKey && state.drawModeActive) {
@@ -2278,6 +2695,11 @@ export function initUI() {
       if ((event.key === "v" || event.key === "V") && togglePagePreviewsBtn) {
         event.preventDefault();
         togglePagePreviewsBtn.click();
+        return;
+      }
+      if ((event.key === "s" || event.key === "S") && toggleSatellitePreviewBtn) {
+        event.preventDefault();
+        toggleSatellitePreviewBtn.click();
         return;
       }
     }

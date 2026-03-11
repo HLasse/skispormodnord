@@ -8,13 +8,15 @@
  * The GeoJSON files are loaded dynamically to avoid bundling issues.
  */
 
+import { PROVIDERS } from "./config.js";
+
 // Cache for loaded border polygons
 let borderPolygons = null;
 let loadingPromise = null;
 
 /**
  * Load border polygons from GeoJSON files
- * @returns {Promise<{no: object, se: object, fi: object}>}
+ * @returns {Promise<{no: object, se: object, fi: object, dk?: object|null}>}
  */
 async function loadBorderPolygons() {
   if (borderPolygons) {
@@ -27,10 +29,11 @@ async function loadBorderPolygons() {
 
   loadingPromise = (async () => {
     try {
-      const [noResp, seResp, fiResp] = await Promise.all([
+      const [noResp, seResp, fiResp, dkResp] = await Promise.all([
         fetch("./data/norway-polygon.geojson"),
         fetch("./data/sweden-polygon.geojson"),
         fetch("./data/finland-polygon.geojson"),
+        fetch("./data/denmark-polygon.geojson").catch(() => null),
       ]);
 
       if (!noResp.ok || !seResp.ok || !fiResp.ok) {
@@ -47,6 +50,10 @@ async function loadBorderPolygons() {
         seResp.json(),
         fiResp.json(),
       ]);
+      let dkData = null;
+      if (dkResp && dkResp.ok) {
+        dkData = await dkResp.json();
+      }
 
       // Handle both Feature and FeatureCollection formats (OSM exports use FeatureCollection)
       function unwrapFeature(data, name) {
@@ -62,17 +69,22 @@ async function loadBorderPolygons() {
       noData = unwrapFeature(noData, "Norway");
       seData = unwrapFeature(seData, "Sweden");
       fiData = unwrapFeature(fiData, "Finland");
+      if (dkData) {
+        dkData = unwrapFeature(dkData, "Denmark");
+      }
 
       borderPolygons = {
         no: noData,
         se: seData,
         fi: fiData,
+        dk: dkData,
       };
 
       console.debug("Border polygons loaded:", {
         norway: noData.geometry?.type,
         sweden: seData.geometry?.type,
         finland: fiData.geometry?.type,
+        denmark: dkData?.geometry?.type || "missing (using bounds fallback)",
       });
 
       return borderPolygons;
@@ -168,6 +180,20 @@ function bboxIntersectsPolygon(bbox, geojson) {
   return false;
 }
 
+function pointInBounds(lon, lat, bounds) {
+  return lon >= bounds.minLon
+    && lon <= bounds.maxLon
+    && lat >= bounds.minLat
+    && lat <= bounds.maxLat;
+}
+
+function bboxIntersectsBounds([minLon, minLat, maxLon, maxLat], bounds) {
+  return !(maxLon < bounds.minLon
+    || minLon > bounds.maxLon
+    || maxLat < bounds.minLat
+    || minLat > bounds.maxLat);
+}
+
 /**
  * Get which providers/countries a tile bounding box intersects
  * @param {[number, number, number, number]} tileBbox - [minLon, minLat, maxLon, maxLat] in WGS84
@@ -186,6 +212,14 @@ export async function getTileProviders(tileBbox) {
   if (bboxIntersectsPolygon(tileBbox, polygons.fi)) {
     providers.push("fi");
   }
+  if (polygons.dk) {
+    if (bboxIntersectsPolygon(tileBbox, polygons.dk)) {
+      providers.push("dk");
+    }
+  } else if (bboxIntersectsBounds(tileBbox, PROVIDERS.dk.bounds)) {
+    // Temporary fallback until DAGI polygon is generated locally.
+    providers.push("dk");
+  }
 
   return providers;
 }
@@ -203,6 +237,7 @@ export async function getPointProviders(lon, lat) {
   const point = [lon, lat];
 
   for (const [id, geojson] of Object.entries(polygons)) {
+    if (!geojson) continue;
     const geometry = geojson.geometry || geojson;
     let polygonsList;
 
@@ -222,11 +257,15 @@ export async function getPointProviders(lon, lat) {
     }
   }
 
+  if (!polygons.dk && pointInBounds(lon, lat, PROVIDERS.dk.bounds)) {
+    providers.push("dk");
+  }
+
   return providers;
 }
 
 /**
- * Get the primary provider for a point (first match by priority: no, se, fi)
+ * Get the primary provider for a point (first match by priority).
  * @param {number} lon - Longitude
  * @param {number} lat - Latitude
  * @returns {Promise<string>} Provider ID, defaults to 'no' if no match
@@ -235,11 +274,13 @@ export async function getPrimaryProvider(lon, lat) {
   const providers = await getPointProviders(lon, lat);
 
   // Priority order for border areas
+  if (providers.includes("dk")) return "dk";
   if (providers.includes("no")) return "no";
   if (providers.includes("se")) return "se";
   if (providers.includes("fi")) return "fi";
 
   // Default fallback based on approximate location
+  if (lat >= 54.4 && lat <= 58.2 && lon >= 7.6 && lon <= 15.6) return "dk";
   if (lat >= 55 && lon >= 10.5 && lon <= 24.5) return "se";
   if (lat >= 59.5 && lon >= 19) return "fi";
   return "no";
@@ -247,7 +288,7 @@ export async function getPrimaryProvider(lon, lat) {
 
 /**
  * Get the border polygon for a country (for use in clipping)
- * @param {string} countryId - Provider ID ('no', 'se', 'fi')
+ * @param {string} countryId - Provider ID ('no', 'se', 'fi', 'dk')
  * @returns {Promise<object>} GeoJSON geometry
  */
 export async function getCountryPolygon(countryId) {

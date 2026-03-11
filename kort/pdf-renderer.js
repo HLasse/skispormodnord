@@ -33,6 +33,42 @@ import {
   fetchCompositeWmtsStitchedImage, fetchWmsImage,
   enableTileCache, clearTileCache,
 } from "./tile-fetcher.js";
+import { PROVIDERS } from "./providers/config.js";
+import {
+  DK_FACILITY_ICON_SIZE_PX,
+  getDkFacilityIconPath,
+} from "./dk-facility-icons.js";
+
+const DK_FRILUFTSDATA_WFS_URL = PROVIDERS.dk?.wms?.friluftsdataRekreativeRuter?.url || "";
+const DK_FRILUFTSDATA_WFS_PAGE_SIZE = 5000;
+const DK_ROUTE_TYPE_COLORS = {
+  Vandrerute: "#d1462f",
+  Cykelrute: "#2b69c9",
+  Loberute: "#7b3ea8",
+  "Løberute": "#7b3ea8",
+  Mountainbikerute: "#b36b00",
+  Skirute: "#2f93c5",
+  Riderute: "#6b4f2f",
+  Sejlrute: "#1594a6",
+  "Adgangsvej": "#4a4a4a",
+  "Rekreativ sti": "#347a43",
+  Motionsrute: "#9b3f6e",
+  "Gratis fiskeri": "#1f7aa8",
+  Bilrute: "#5b5b5b",
+  "Andet": "#805f3f",
+  "Trec-bane": "#3f7f73",
+};
+const DK_FACILITY_POINT_COLOR_PALETTE = [
+  "#1f7aa8",
+  "#d1462f",
+  "#2b69c9",
+  "#7b3ea8",
+  "#2f8f46",
+  "#8a5a23",
+  "#a63f68",
+  "#0b7f7a",
+];
+const dkFacilityIconImageCache = new Map();
 
 // --- Height mask ---
 
@@ -72,6 +108,319 @@ export function heightOverlayScaleForMapScale(scale) {
     return HEIGHT_OVERLAY_SCALE_BY_MAP_SCALE[scale];
   }
   return 0.45;
+}
+
+// --- DK friluftsdata WFS overlays ---
+
+function extractFirstJsonObject(text) {
+  const start = text.indexOf("{");
+  if (start < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      depth += 1;
+      continue;
+    }
+    if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return text.slice(start, i + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
+function parseWfsFeatureCollection(text) {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    const firstObject = extractFirstJsonObject(text);
+    if (!firstObject) throw error;
+    return JSON.parse(firstObject);
+  }
+}
+
+function colorForDkFacilityType(facilityType) {
+  const key = String(facilityType || "");
+  if (!key) return DK_FACILITY_POINT_COLOR_PALETTE[0];
+  let hash = 0;
+  for (let i = 0; i < key.length; i += 1) {
+    hash = ((hash << 5) - hash) + key.charCodeAt(i);
+    hash |= 0;
+  }
+  const index = Math.abs(hash) % DK_FACILITY_POINT_COLOR_PALETTE.length;
+  return DK_FACILITY_POINT_COLOR_PALETTE[index];
+}
+
+function toPixelFromLonLat(coord, forward, bbox, width, height) {
+  if (!Array.isArray(coord) || coord.length < 2) return null;
+  const [minx, miny, maxx, maxy] = bbox;
+  const [x, y] = forward.forward([coord[0], coord[1]]);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const px = ((x - minx) / (maxx - minx)) * width;
+  const py = height - ((y - miny) / (maxy - miny)) * height;
+  if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
+  return [px, py];
+}
+
+function drawLineStringFromLonLat(ctx, coordinates, forward, bbox, width, height) {
+  if (!Array.isArray(coordinates) || coordinates.length < 2) return;
+  let started = false;
+  ctx.beginPath();
+  for (let i = 0; i < coordinates.length; i += 1) {
+    const pixel = toPixelFromLonLat(coordinates[i], forward, bbox, width, height);
+    if (!pixel) {
+      started = false;
+      continue;
+    }
+    const [px, py] = pixel;
+    if (!started) {
+      ctx.moveTo(px, py);
+      started = true;
+    } else {
+      ctx.lineTo(px, py);
+    }
+  }
+  if (started) ctx.stroke();
+}
+
+function drawRouteGeometryFromLonLat(ctx, geometry, forward, bbox, width, height) {
+  if (!geometry || typeof geometry !== "object") return;
+  if (geometry.type === "LineString") {
+    drawLineStringFromLonLat(ctx, geometry.coordinates, forward, bbox, width, height);
+    return;
+  }
+  if (geometry.type === "MultiLineString") {
+    (geometry.coordinates || []).forEach((line) => {
+      drawLineStringFromLonLat(ctx, line, forward, bbox, width, height);
+    });
+    return;
+  }
+  if (geometry.type === "GeometryCollection") {
+    (geometry.geometries || []).forEach((part) => {
+      drawRouteGeometryFromLonLat(ctx, part, forward, bbox, width, height);
+    });
+  }
+}
+
+function drawPointFromLonLat(
+  ctx,
+  coord,
+  forward,
+  bbox,
+  width,
+  height,
+  { radius = 4, iconImage = null, iconSize = DK_FACILITY_ICON_SIZE_PX } = {}
+) {
+  const pixel = toPixelFromLonLat(coord, forward, bbox, width, height);
+  if (!pixel) return;
+  const [px, py] = pixel;
+  if (iconImage) {
+    const halfSize = iconSize / 2;
+    ctx.drawImage(iconImage, px - halfSize, py - halfSize, iconSize, iconSize);
+    return;
+  }
+  ctx.beginPath();
+  ctx.arc(px, py, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+}
+
+function drawFacilityGeometryFromLonLat(
+  ctx,
+  geometry,
+  forward,
+  bbox,
+  width,
+  height,
+  drawOptions = {}
+) {
+  if (!geometry || typeof geometry !== "object") return;
+  if (geometry.type === "Point") {
+    drawPointFromLonLat(ctx, geometry.coordinates, forward, bbox, width, height, drawOptions);
+    return;
+  }
+  if (geometry.type === "MultiPoint") {
+    (geometry.coordinates || []).forEach((point) => {
+      drawPointFromLonLat(ctx, point, forward, bbox, width, height, drawOptions);
+    });
+    return;
+  }
+  if (geometry.type === "GeometryCollection") {
+    (geometry.geometries || []).forEach((part) => {
+      drawFacilityGeometryFromLonLat(ctx, part, forward, bbox, width, height, drawOptions);
+    });
+  }
+}
+
+function getDkFacilityIconImage(iconPath) {
+  if (!iconPath) return Promise.resolve(null);
+  const cached = dkFacilityIconImageCache.get(iconPath);
+  if (cached) return cached;
+  const pending = new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(null);
+    image.src = iconPath;
+  });
+  dkFacilityIconImageCache.set(iconPath, pending);
+  return pending;
+}
+
+function drawDkRouteFeaturesOnCanvas(ctx, features, bbox, width, height, epsgCode) {
+  if (!features.length) return;
+  const utmZone = epsgCode - 25800;
+  const utmDef = `+proj=utm +zone=${utmZone} +ellps=GRS80 +units=m +no_defs`;
+  const forward = proj4("EPSG:4326", utmDef);
+
+  features.forEach((feature) => {
+    const routeType = feature?.properties?.rute_ty;
+    const color = DK_ROUTE_TYPE_COLORS[routeType] || "#d36b2d";
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    drawRouteGeometryFromLonLat(ctx, feature?.geometry, forward, bbox, width, height);
+    ctx.restore();
+  });
+}
+
+async function drawDkFacilityFeaturesOnCanvas(ctx, features, bbox, width, height, epsgCode) {
+  if (!features.length) return;
+  const utmZone = epsgCode - 25800;
+  const utmDef = `+proj=utm +zone=${utmZone} +ellps=GRS80 +units=m +no_defs`;
+  const forward = proj4("EPSG:4326", utmDef);
+
+  const iconPaths = [...new Set(features
+    .map((feature) => getDkFacilityIconPath(feature?.properties?.facil_ty))
+    .filter(Boolean))];
+  if (iconPaths.length) {
+    await Promise.all(iconPaths.map((iconPath) => getDkFacilityIconImage(iconPath)));
+  }
+
+  for (const feature of features) {
+    const facilityType = feature?.properties?.facil_ty;
+    const iconPath = getDkFacilityIconPath(facilityType);
+    const iconImage = iconPath ? await getDkFacilityIconImage(iconPath) : null;
+    ctx.save();
+    if (iconImage) {
+      drawFacilityGeometryFromLonLat(
+        ctx,
+        feature?.geometry,
+        forward,
+        bbox,
+        width,
+        height,
+        { iconImage, iconSize: DK_FACILITY_ICON_SIZE_PX }
+      );
+    } else {
+      ctx.fillStyle = colorForDkFacilityType(facilityType);
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 1;
+      drawFacilityGeometryFromLonLat(
+        ctx,
+        feature?.geometry,
+        forward,
+        bbox,
+        width,
+        height,
+        { radius: 4 }
+      );
+    }
+    ctx.restore();
+  }
+}
+
+async function fetchFilteredDkWfsFeatures({
+  typeName,
+  propertyName,
+  attributeName,
+  selectedValues,
+  localBBox,
+  localEpsg,
+  cache,
+}) {
+  if (!DK_FRILUFTSDATA_WFS_URL || !selectedValues.length) return [];
+
+  const [minLon, minLat, maxLon, maxLat] = utmBboxToWgs84(localBBox, localEpsg);
+  const south = Math.min(minLat, maxLat);
+  const west = Math.min(minLon, maxLon);
+  const north = Math.max(minLat, maxLat);
+  const east = Math.max(minLon, maxLon);
+  const bbox = [south, west, north, east, "EPSG:4326"].join(",");
+  const valuesKey = [...new Set(selectedValues)].sort().join("|");
+  const cacheKey = `${typeName}::${propertyName}::${attributeName}::${bbox}::${valuesKey}`;
+  if (cache && cache.has(cacheKey)) {
+    return cache.get(cacheKey);
+  }
+
+  const selectedSet = new Set(selectedValues);
+  const allFeatures = [];
+  let startIndex = 0;
+
+  while (true) {
+    const params = new URLSearchParams({
+      service: "WFS",
+      version: "2.0.0",
+      request: "GetFeature",
+      typeNames: typeName,
+      outputFormat: "application/json",
+      srsName: "EPSG:4326",
+      count: String(DK_FRILUFTSDATA_WFS_PAGE_SIZE),
+      startIndex: String(startIndex),
+      bbox,
+      propertyName,
+    });
+    const response = await fetch(`${DK_FRILUFTSDATA_WFS_URL}?${params.toString()}`, {
+      mode: "cors",
+    });
+    if (!response.ok) {
+      throw new Error(`DK WFS request failed (${response.status}) for ${typeName}.`);
+    }
+    const payloadText = await response.text();
+    const payload = parseWfsFeatureCollection(payloadText);
+    const sourceFeatures = payload.features || [];
+    const filtered = sourceFeatures.filter((feature) => {
+      const value = feature?.properties?.[attributeName];
+      return selectedSet.has(value);
+    });
+    if (filtered.length) {
+      allFeatures.push(...filtered);
+    }
+
+    if (sourceFeatures.length < DK_FRILUFTSDATA_WFS_PAGE_SIZE) {
+      break;
+    }
+    startIndex += sourceFeatures.length;
+  }
+
+  if (cache) {
+    cache.set(cacheKey, allFeatures);
+  }
+  return allFeatures;
 }
 
 // --- Greyscale conversion ---
@@ -287,6 +636,126 @@ export function drawDeclinationLabel(ctx, declinationTrue, convergence, width, h
   });
 }
 
+function mmToPx(mm, dpi) {
+  return (mm / 25.4) * dpi;
+}
+
+export function drawScaleRuler(ctx, bbox, dpi, width, height, greyscale = false) {
+  const segmentMeters = 200;
+  const segmentCount = 5;
+  const gridSpacing = segmentMeters * segmentCount;
+  const declinationBottomInsetPx = 12;
+  if (
+    !Array.isArray(bbox) ||
+    bbox.length < 4 ||
+    !Number.isFinite(dpi) ||
+    !Number.isFinite(width) ||
+    !Number.isFinite(height)
+  ) {
+    return;
+  }
+  const [minX, , maxX] = bbox;
+  const bboxWidth = maxX - minX;
+  if (
+    !Number.isFinite(minX) ||
+    !Number.isFinite(maxX) ||
+    !Number.isFinite(bboxWidth) ||
+    bboxWidth <= 0
+  ) {
+    return;
+  }
+
+  const toPixelX = (x) => ((x - minX) / bboxWidth) * width;
+  const rightGridX = Math.floor(maxX / gridSpacing) * gridSpacing;
+  const leftGridX = rightGridX - gridSpacing;
+  if (leftGridX < minX) return;
+
+  const barStartPx = Math.round(toPixelX(leftGridX));
+  const barEndPx = Math.round(toPixelX(rightGridX));
+  const totalWidthPx = barEndPx - barStartPx;
+  if (!Number.isFinite(totalWidthPx) || totalWidthPx <= 0) return;
+
+  const segmentWidthPx = totalWidthPx / segmentCount;
+  const fontSizePx = mmToPx(2.6, dpi);
+  const barHeightPx = mmToPx(3.2, dpi);
+  const tickHeightPx = mmToPx(1.9, dpi);
+  const labelGapPx = mmToPx(1.4, dpi);
+  const lineWidthPx = Math.max(1, mmToPx(0.3, dpi));
+  const labelAngle = -Math.PI / 4;
+  const labelAngleSin = Math.sin(Math.abs(labelAngle));
+  const labels = ["0", "0.2", "0.4", "0.6", "0.8", "1"];
+  const unitLabel = "km";
+
+  ctx.save();
+  ctx.font = `${fontSizePx}px IBM Plex Mono, monospace`;
+  const labelMetrics = labels.map((label) => {
+    const metrics = ctx.measureText(label);
+    return {
+      label,
+      width: metrics.width,
+      height: (
+        (metrics.actualBoundingBoxAscent ?? fontSizePx * 0.8)
+        + (metrics.actualBoundingBoxDescent ?? fontSizePx * 0.2)
+      ),
+    };
+  });
+  const maxRotatedLabelBottomPx = Math.max(
+    ...labelMetrics.map(({ width: labelWidth, height: labelHeight }) => (
+      labelAngleSin * (labelWidth + labelHeight)
+    ))
+  );
+  const targetLabelBottomY = height - declinationBottomInsetPx;
+  const labelOriginY = targetLabelBottomY - maxRotatedLabelBottomPx;
+  const barY = labelOriginY - labelGapPx - tickHeightPx - barHeightPx;
+  if (barY < 0) {
+    ctx.restore();
+    return;
+  }
+
+  const barX = barStartPx;
+  const segmentColors = greyscale
+    ? ["#ffffff", "#111111"]
+    : ["#f6f2e8", "#1e1b16"];
+
+  for (let index = 0; index < segmentCount; index += 1) {
+    const x = barX + (index * segmentWidthPx);
+    ctx.fillStyle = segmentColors[index % 2];
+    ctx.fillRect(x, barY, segmentWidthPx, barHeightPx);
+  }
+
+  ctx.strokeStyle = greyscale ? "#111111" : "#2b261f";
+  ctx.lineWidth = lineWidthPx;
+  ctx.strokeRect(barX, barY, totalWidthPx, barHeightPx);
+
+  ctx.beginPath();
+  for (let index = 0; index <= segmentCount; index += 1) {
+    const x = barX + (index * segmentWidthPx);
+    ctx.moveTo(x, barY);
+    ctx.lineTo(x, barY + barHeightPx + tickHeightPx);
+  }
+  ctx.stroke();
+
+  ctx.fillStyle = greyscale ? "#111111" : "#1b1711";
+  labels.forEach((label, index) => {
+    const x = barX + (index * segmentWidthPx);
+    ctx.save();
+    ctx.translate(x, labelOriginY);
+    ctx.rotate(labelAngle);
+    ctx.textAlign = "right";
+    ctx.textBaseline = "top";
+    ctx.fillText(label, 0, 0);
+    ctx.restore();
+  });
+  ctx.save();
+  ctx.translate(barX + totalWidthPx, labelOriginY);
+  ctx.rotate(labelAngle);
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillText(unitLabel, mmToPx(1.2, dpi), 0);
+  ctx.restore();
+  ctx.restore();
+}
+
 // --- Progress ---
 
 export function createRenderProgressUpdater(total, setStatusFn, setRenderProgressFn) {
@@ -373,6 +842,7 @@ export async function renderGPXToPdf(file, options) {
   enableTileCache();
 
   const pdfDoc = await PDFDocument.create();
+  const dkWfsFeatureCache = new Map();
   let completed = 0;
   const progress = createRenderProgressUpdater(pages.length, setStatusFn, setRenderProgressFn);
 
@@ -418,25 +888,25 @@ export async function renderGPXToPdf(file, options) {
         options.layer
       );
 
-    const overlayPromises = [];
-    const heightLayers = options.heightLayers ?? [];
+      const overlayPromises = [];
+      const heightLayers = options.heightLayers ?? [];
       const weakIceLayers = options.weakIceLayers ?? [];
       const weakIceOpacity = Number.isFinite(options.weakIceOpacity)
         ? options.weakIceOpacity
         : 1;
-    const heightOpacity = Number.isFinite(options.heightOpacity)
-      ? options.heightOpacity
-      : DEFAULT_HEIGHT_OVERLAY_OPACITY;
+      const heightOpacity = Number.isFinite(options.heightOpacity)
+        ? options.heightOpacity
+        : DEFAULT_HEIGHT_OVERLAY_OPACITY;
       const heightScale = Number.isFinite(options.heightOverlayScaleFactor)
         ? options.heightOverlayScaleFactor
         : heightOverlayScaleForMapScale(options.scale);
       const heightWidthPx = Math.max(1, Math.round(wPx * heightScale));
       const heightHeightPx = Math.max(1, Math.round(hPx * heightScale));
-    const heightOverlayPromises = heightLayers.map((layerName) =>
-      fetchWmsImage(
-        {
-          baseUrl: WMS_HEIGHT_URL,
-          layer: layerName,
+      const heightOverlayPromises = heightLayers.map((layerName) =>
+        fetchWmsImage(
+          {
+            baseUrl: WMS_HEIGHT_URL,
+            layer: layerName,
             styles: "",
             format: "image/png",
             transparent: true,
@@ -447,25 +917,25 @@ export async function renderGPXToPdf(file, options) {
           localEpsg
         )
       );
-    const weakIceOverlayPromises = weakIceLayers.map((layerName) =>
-      fetchWmsImage(
-        {
-          baseUrl: WMS_WEAK_ICE_URL,
-          layer: layerName,
-          styles: "",
-          format: "image/png",
-          transparent: true,
-        },
-        localBBox,
-        wPx,
-        hPx,
-        localEpsg
-      )
-    );
-    if (options.showSkiRoutes) {
-      overlayPromises.push(
+      const weakIceOverlayPromises = weakIceLayers.map((layerName) =>
         fetchWmsImage(
           {
+            baseUrl: WMS_WEAK_ICE_URL,
+            layer: layerName,
+            styles: "",
+            format: "image/png",
+            transparent: true,
+          },
+          localBBox,
+          wPx,
+          hPx,
+          localEpsg
+        )
+      );
+      if (options.showSkiRoutes) {
+        overlayPromises.push(
+          fetchWmsImage(
+            {
               baseUrl: WMS_ROUTE_URL,
               layer: WMS_ROUTE_LAYERS.ski,
               styles: "",
@@ -497,23 +967,66 @@ export async function renderGPXToPdf(file, options) {
         );
       }
 
-    const [baseImg, ...overlayImgs] = await Promise.all([
-      baseImgPromise,
-      ...heightOverlayPromises,
-      ...weakIceOverlayPromises,
-      ...overlayPromises,
-    ]);
-    const heightOverlayImgs = overlayImgs.slice(0, heightOverlayPromises.length);
-    const weakIceOverlayImgs = overlayImgs.slice(
-      heightOverlayPromises.length,
-      heightOverlayPromises.length + weakIceOverlayPromises.length
-    );
-    const routeOverlayImgs = overlayImgs.slice(
-      heightOverlayPromises.length + weakIceOverlayPromises.length
-    );
-    const activeMaskColors = getActiveHeightMaskColors();
-    const maskedHeightOverlays = heightOverlayImgs.map((img) => {
-      const canvas = document.createElement("canvas");
+      const dkRouteTypes = localEpsg === 25832
+        ? (options.dkFriluftsdataRouteTypes ?? [])
+        : [];
+      const dkFacilityTypes = localEpsg === 25832
+        ? (options.dkFriluftsdataFacilityTypes ?? [])
+        : [];
+      const dkRouteFeaturesPromise = dkRouteTypes.length
+        ? fetchFilteredDkWfsFeatures({
+            typeName: "fkg:fkg.t_5802_fac_li",
+            propertyName: "geometri,rute_ty",
+            attributeName: "rute_ty",
+            selectedValues: dkRouteTypes,
+            localBBox,
+            localEpsg,
+            cache: dkWfsFeatureCache,
+          }).catch((error) => {
+            console.warn("DK route overlay failed for PDF:", error);
+            return [];
+          })
+        : Promise.resolve([]);
+      const dkFacilityFeaturesPromise = dkFacilityTypes.length
+        ? fetchFilteredDkWfsFeatures({
+            typeName: "fkg:fkg.t_5800_fac_pkt",
+            propertyName: "geometri,facil_ty",
+            attributeName: "facil_ty",
+            selectedValues: dkFacilityTypes,
+            localBBox,
+            localEpsg,
+            cache: dkWfsFeatureCache,
+          }).catch((error) => {
+            console.warn("DK facility overlay failed for PDF:", error);
+            return [];
+          })
+        : Promise.resolve([]);
+
+      const [
+        [baseImg, ...overlayImgs],
+        dkRouteFeatures,
+        dkFacilityFeatures,
+      ] = await Promise.all([
+        Promise.all([
+          baseImgPromise,
+          ...heightOverlayPromises,
+          ...weakIceOverlayPromises,
+          ...overlayPromises,
+        ]),
+        dkRouteFeaturesPromise,
+        dkFacilityFeaturesPromise,
+      ]);
+      const heightOverlayImgs = overlayImgs.slice(0, heightOverlayPromises.length).filter(Boolean);
+      const weakIceOverlayImgs = overlayImgs.slice(
+        heightOverlayPromises.length,
+        heightOverlayPromises.length + weakIceOverlayPromises.length
+      ).filter(Boolean);
+      const routeOverlayImgs = overlayImgs.slice(
+        heightOverlayPromises.length + weakIceOverlayPromises.length
+      ).filter(Boolean);
+      const activeMaskColors = getActiveHeightMaskColors();
+      const maskedHeightOverlays = heightOverlayImgs.map((img) => {
+        const canvas = document.createElement("canvas");
         canvas.width = img.width;
         canvas.height = img.height;
         const maskCtx = canvas.getContext("2d", { willReadFrequently: true });
@@ -548,13 +1061,29 @@ export async function renderGPXToPdf(file, options) {
         });
         ctx.restore();
       }
-    if (routeOverlayImgs.length) {
-      ctx.save();
-      ctx.globalAlpha = ROUTE_OVERLAY_OPACITY;
+      if (routeOverlayImgs.length) {
+        ctx.save();
+        ctx.globalAlpha = ROUTE_OVERLAY_OPACITY;
         routeOverlayImgs.forEach((img) => {
           ctx.drawImage(img, 0, 0, wPx, hPx);
         });
         ctx.restore();
+      }
+      if (dkRouteFeatures.length) {
+        ctx.save();
+        ctx.globalAlpha = ROUTE_OVERLAY_OPACITY;
+        drawDkRouteFeaturesOnCanvas(ctx, dkRouteFeatures, localBBox, wPx, hPx, localEpsg);
+        ctx.restore();
+      }
+      if (dkFacilityFeatures.length) {
+        await drawDkFacilityFeaturesOnCanvas(
+          ctx,
+          dkFacilityFeatures,
+          localBBox,
+          wPx,
+          hPx,
+          localEpsg
+        );
       }
       // Greyscale: convert all composited layers to monochrome, then draw grid on top
       if (options.greyscale) {
@@ -629,6 +1158,9 @@ export async function renderGPXToPdf(file, options) {
         }
         const convergence = computeGridConvergenceDeg(lon, lat, localEpsg);
         drawDeclinationLabel(ctx, info.decl, convergence, wPx, hPx, options.greyscale);
+      }
+      if (options.showScaleRuler) {
+        drawScaleRuler(ctx, localBBox, options.dpi, wPx, hPx, options.greyscale);
       }
 
       const imageFormat = options.pageImageFormat ?? "image/png";
