@@ -2181,26 +2181,24 @@ h1 {
 }
 
 .render-status {
-  min-height: 18px;
   font-size: 12px;
   display: flex;
   align-items: center;
   gap: 8px;
   color: var(--muted);
   opacity: 0;
-  transition: opacity 0.2s ease;
+  max-height: 0;
+  overflow: hidden;
+  transition: opacity 0.2s ease, max-height 0.2s ease;
 }
 
 .sticky-render .render-status {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 54px;
   padding: 0 2px;
 }
 
 .render-status.visible {
   opacity: 1;
+  max-height: 24px;
 }
 
 .hidden {
@@ -2320,10 +2318,7 @@ h1 {
 }
 
 .sticky-render .render-progress {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 48px;
+  max-width: 100%;
 }
 
 .render-progress.hidden {
