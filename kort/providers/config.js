@@ -99,11 +99,53 @@ export const PROVIDERS = {
     attribution: "&copy; Maanmittauslaitos",
     license: "CC BY 4.0",
   },
+
+  dk: {
+    id: "dk",
+    name: "Denmark",
+    flag: "\u{1F1E9}\u{1F1F0}",
+    // Includes Bornholm and nearshore islands.
+    bounds: { minLat: 54.4, maxLat: 58.0, minLon: 7.8, maxLon: 15.4 },
+    wmts: {
+      // Datafordeler (Skærmkortet Klassisk WMTS, View1 / EPSG:25832)
+      proxyUrl: "/.netlify/functions/wmts-proxy?provider=dk&layer={layer}&z={z}&x={x}&y={y}",
+      upstreamUrl: "https://wmts.datafordeler.dk/Dkskaermkort/topo_skaermkort_wmts/1.0.0/wmts",
+      defaultLayer: "topo_skaermkort",
+      matrixSet: "View1",
+      epsg: 25832,
+      maxZoom: 13,
+      requiresProxy: true,
+      authType: "apikey",
+      // Leaflet's native XYZ path assumes WebMercator and does not work for View1.
+      // DK tiles are fetched via a custom reprojection path in composite-tile-layer.js.
+      supportsWebMercator: false,
+    },
+    wms: {
+      // DTK25 high-detail planning map (used for high zoom + PDF render in DK).
+      dtk25: {
+        proxyUrl: "/.netlify/functions/wmts-proxy?provider=dk&kind=wms",
+        baseUrl: "https://wms.datafordeler.dk/DKtopokort/dtk_25/1.0.0/WMS",
+        layer: "dtk25",
+        crs: "EPSG:25832",
+        format: "image/jpeg",
+      },
+      dtk25SwitchZoom: 11,
+      friluftsdataRekreativeRuter: {
+        url: "https://geofa.geodanmark.dk/ows/fkg/fkg",
+        // Keep as an array so grouped sublayers can be enabled together.
+        layers: ["fkg.t_5802_fac_li"],
+        title: "Friluftsliv faciliteter, linjer (5802)",
+        legendUrl: "https://geofa.geodanmark.dk/ows/fkg/fkg/?version=1.3.0&service=WMS&request=GetLegendGraphic&sld_version=1.1.0&layer=fkg.t_5802_fac_li&format=image/png&STYLE=default",
+      },
+    },
+    attribution: "&copy; SDFI / Datafordeler",
+    license: "Datafordeler terms",
+  },
 };
 
 /**
  * Get provider by ID
- * @param {string} id - Provider ID (e.g., 'no', 'se', 'fi')
+ * @param {string} id - Provider ID (e.g., 'no', 'se', 'fi', 'dk')
  * @returns {object|null} Provider configuration or null if not found
  */
 export function getProvider(id) {

@@ -15,6 +15,9 @@ import {
 } from "./projection.js";
 import { AppError, classifyTileError, withRetry } from "./errors.js";
 import { getContext2d } from "./utils.js";
+import {
+  DK_WMTS_EPSG,
+} from "./providers/dk-matrix.js";
 
 // --- WMTS capabilities cache ---
 const wmtsConfigCache = new Map();
@@ -108,12 +111,13 @@ export function parseCorner(str) {
   return [parts[0], parts[1]];
 }
 
-export async function getWmtsTileMatrixSet(tileMatrixSetId) {
-  if (wmtsConfigCache.has(tileMatrixSetId)) return wmtsConfigCache.get(tileMatrixSetId);
+export async function getWmtsTileMatrixSet(tileMatrixSetId, capabilitiesUrl = WMTS_CAPABILITIES_URL) {
+  const cacheKey = `${capabilitiesUrl}::${tileMatrixSetId}`;
+  if (wmtsConfigCache.has(cacheKey)) return wmtsConfigCache.get(cacheKey);
 
   let res;
   try {
-    res = await withRetry(() => fetch(WMTS_CAPABILITIES_URL, { mode: "cors" }), { maxRetries: 2, delay: 1000 });
+    res = await withRetry(() => fetch(capabilitiesUrl, { mode: "cors" }), { maxRetries: 2, delay: 1000 });
   } catch (err) {
     throw new AppError(
       "WMTS GetCapabilities kunne ikke hentes. Tjek din internetforbindelse.",
@@ -170,7 +174,7 @@ export async function getWmtsTileMatrixSet(tileMatrixSetId) {
   matrices.sort((a, b) => a.scaleDenominator - b.scaleDenominator);
 
   const config = { tileMatrixSetId, matrices };
-  wmtsConfigCache.set(tileMatrixSetId, config);
+  wmtsConfigCache.set(cacheKey, config);
   return config;
 }
 
@@ -336,6 +340,20 @@ export async function _fetchTileBitmapUncached(url, maxRetries = 2) {
   throw lastError;
 }
 
+function buildDkWmsProxyUrl({ bbox, width, height, layer = "dtk25", crs = "EPSG:25832", format = "image/jpeg" }) {
+  const params = new URLSearchParams({
+    provider: "dk",
+    kind: "wms",
+    layer,
+    crs,
+    bbox: bbox.join(","),
+    width: String(width),
+    height: String(height),
+    format,
+  });
+  return `/.netlify/functions/wmts-proxy?${params.toString()}`;
+}
+
 async function drawTileWithRetry(url, drawFn, { maxRetries = TILE_DRAW_RETRY_ATTEMPTS } = {}) {
   let lastError;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
@@ -419,7 +437,11 @@ export function getProviderTileUrl(providerId, layerId, tileMatrixSetId, matrixI
     throw new Error(`Unknown provider: ${providerId}`);
   }
 
-  const layer = layerId || provider.wmts.defaultLayer;
+  // Non-Norway providers should always use their own default layer.
+  // Callers may pass Norway's default "toporaster" through shared code paths.
+  const layer = providerId === "no"
+    ? (layerId || provider.wmts.defaultLayer)
+    : provider.wmts.defaultLayer;
 
   if (provider.wmts.requiresProxy) {
     // Use proxy URL
@@ -458,6 +480,13 @@ export async function fetchCompositeWmtsStitchedImage(bbox, widthPx, heightPx, e
   if (providers.length === 0) {
     console.warn("[PDF] No provider detected for bbox, using default 'no'");
     providers = [CURRENT_PROVIDER];
+  }
+
+  // v1 DK support is DK-only. If fallback bounds produce a mixed result with DK,
+  // prefer Denmark to avoid projection mismatches in cross-provider compositing.
+  if (providers.includes("dk") && providers.length > 1) {
+    console.warn("[PDF] Mixed providers including DK detected; using DK-only path for v1");
+    providers = ["dk"];
   }
 
   // Route all cases through the composite path (which handles white background)
@@ -529,6 +558,10 @@ export async function fetchWmtsStitchedImageForProvider(providerId, bbox, widthP
     throw new Error(`Unknown provider: ${providerId}`);
   }
 
+  if (providerId === "dk") {
+    return fetchDkWmtsStitchedImageForProvider(providerId, bbox, widthPx, heightPx, epsgCode, layerId, maxZoomLimit);
+  }
+
   // For non-Norway providers, we need to handle the case where they might not have
   // the same UTM tile matrix sets. Fall back to webmercator approach.
   if (providerId !== "no") {
@@ -551,7 +584,7 @@ export async function fetchWmtsStitchedImageForProvider(providerId, bbox, widthP
   const tileMatrixSetId = tileMatrixSetIdFromEpsg(tileEpsg, providerId);
 
   // Norway uses UTM-based tile matrix sets
-  const { matrices } = await getWmtsTileMatrixSet(tileMatrixSetId);
+  const { matrices } = await getWmtsTileMatrixSet(tileMatrixSetId, provider.wmts.capabilitiesUrl);
 
   const desiredResX = (tileBbox[2] - tileBbox[0]) / widthPx;
   const desiredResY = (tileBbox[3] - tileBbox[1]) / heightPx;
@@ -692,6 +725,104 @@ export async function fetchWmtsStitchedImageForProvider(providerId, bbox, widthP
   return out;
 }
 
+// --- Denmark path (Datafordeler WMTS View1 / EPSG:25832) ---
+
+export async function fetchDkWmtsStitchedImageForProvider(providerId, bbox, widthPx, heightPx, epsgCode, layerId, maxZoomLimit) {
+  const provider = PROVIDERS[providerId];
+  if (!provider) {
+    throw new Error(`Unknown provider: ${providerId}`);
+  }
+  const dtk = provider.wms?.dtk25 || {};
+  const layer = dtk.layer || "dtk25";
+  const crs = dtk.crs || "EPSG:25832";
+  const format = dtk.format || "image/jpeg";
+  const sourceEpsg = Number(String(crs).replace("EPSG:", "")) || DK_WMTS_EPSG;
+
+  const [minx, miny, maxx, maxy] = bbox;
+  const pageCorners = {
+    tl: [minx, maxy],
+    tr: [maxx, maxy],
+    bl: [minx, miny],
+    br: [maxx, miny],
+  };
+
+  let srcCorners = pageCorners;
+  if (epsgCode !== sourceEpsg) {
+    const fromDef = `+proj=utm +zone=${epsgCode - 25800} +ellps=GRS80 +units=m +no_defs`;
+    const toDef = `+proj=utm +zone=${sourceEpsg - 25800} +ellps=GRS80 +units=m +no_defs`;
+    const pageToSource = proj4(fromDef, toDef);
+    srcCorners = {
+      tl: pageToSource.forward(pageCorners.tl),
+      tr: pageToSource.forward(pageCorners.tr),
+      bl: pageToSource.forward(pageCorners.bl),
+      br: pageToSource.forward(pageCorners.br),
+    };
+  }
+
+  const srcPoints = [srcCorners.tl, srcCorners.tr, srcCorners.bl, srcCorners.br];
+  const srcBbox = [
+    Math.min(...srcPoints.map((p) => p[0])),
+    Math.min(...srcPoints.map((p) => p[1])),
+    Math.max(...srcPoints.map((p) => p[0])),
+    Math.max(...srcPoints.map((p) => p[1])),
+  ];
+
+  // Keep proxy-safe image sizes while preserving aspect.
+  const MAX_DIM = 12000;
+  const maxPageDim = Math.max(widthPx, heightPx);
+  const scale = maxPageDim > MAX_DIM ? (MAX_DIM / maxPageDim) : 1;
+  const reqWidth = Math.max(512, Math.round(widthPx * scale));
+  const reqHeight = Math.max(512, Math.round(heightPx * scale));
+
+  const url = buildDkWmsProxyUrl({
+    bbox: srcBbox,
+    width: reqWidth,
+    height: reqHeight,
+    layer,
+    crs,
+    format,
+  });
+
+  let sourceBitmap;
+  try {
+    sourceBitmap = await fetchTileBitmap(url);
+  } catch (err) {
+    throw new AppError(
+      "Kunne ikke hente DTK25-kortet fra Datafordeler.",
+      {
+        technical: `DK DTK25 WMS failed: ${err?.message || err}`,
+        recoverable: true,
+        retryable: true,
+      }
+    );
+  }
+
+  const out = document.createElement("canvas");
+  out.width = widthPx;
+  out.height = heightPx;
+  const octx = getContext2d(out);
+  octx.fillStyle = "#ffffff";
+  octx.fillRect(0, 0, widthPx, heightPx);
+
+  const sourcePx = ([ux, uy]) => [
+    (ux - srcBbox[0]) / (srcBbox[2] - srcBbox[0]) * reqWidth,
+    (srcBbox[3] - uy) / (srcBbox[3] - srcBbox[1]) * reqHeight,
+  ];
+  const mTL = sourcePx(srcCorners.tl);
+  const mTR = sourcePx(srcCorners.tr);
+  const mBL = sourcePx(srcCorners.bl);
+  const xf = computeAffineTransform(
+    mTL, mTR, mBL,
+    [0, 0], [widthPx, 0], [0, heightPx]
+  );
+  octx.setTransform(xf.a, xf.b, xf.c, xf.d, xf.e, xf.f);
+  octx.drawImage(sourceBitmap, 0, 0);
+  octx.setTransform(1, 0, 0, 1, 0, 0);
+
+  try { sourceBitmap.close(); } catch (_) { /* ignore */ }
+  return out;
+}
+
 // --- SE/FI path ---
 
 /**
@@ -700,6 +831,9 @@ export async function fetchWmtsStitchedImageForProvider(providerId, bbox, widthP
  */
 export async function fetchWebMercatorStitchedImageForProvider(providerId, bbox, widthPx, heightPx, epsgCode, layerId, maxZoomLimit, maxTiles) {
   const provider = PROVIDERS[providerId];
+  if (provider?.wmts?.supportsWebMercator === false) {
+    throw new Error(`Provider ${providerId} does not support direct WebMercator tiles`);
+  }
   // Always use provider's own default layer - Norway's "toporaster" doesn't exist on Sweden/Finland
   const layer = provider.wmts.defaultLayer;
 

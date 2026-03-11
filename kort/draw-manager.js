@@ -1,4 +1,4 @@
-// draw-manager.js -- Core drawing engine: click-to-place, freehand, rubber band, distance, page locking,
+// draw-manager.js -- Core drawing engine: click-to-place, rubber band, distance, page locking,
 //   drag, midpoint insert, delete, undo/redo, snap-to-track, reverse, clear
 // Dependencies: state.js, projection.js, gpx-parser.js, utils.js, map-manager.js
 // DOES NOT import from ui-controller.js (callbacks only)
@@ -25,12 +25,6 @@ let callbacks = {
 // Module-scoped handler references for cleanup
 let _mapClickHandler = null;
 let _mouseMoveHandler = null;
-let _mouseDownHandler = null;
-let _mouseUpHandler = null;
-let _keyUpHandler = null;
-
-// Freehand projection cache (avoid re-projecting on every mousemove)
-let _freehandTransformer = null;
 
 // Drag state (transient, not in state.js)
 let _dragMarkerIndex = null;
@@ -75,9 +69,6 @@ function reverseAction(action) {
     case "insertMidpoint":
       state.drawnRoute.splice(action.index, 1);
       break;
-    case "freehand":
-      state.drawnRoute.splice(action.startIndex, action.points.length);
-      break;
     case "clearAll":
       state.drawnRoute = [...action.points];
       break;
@@ -100,9 +91,6 @@ function reapplyAction(action) {
       break;
     case "insertMidpoint":
       state.drawnRoute.splice(action.index, 0, action.point);
-      break;
-    case "freehand":
-      state.drawnRoute.splice(action.startIndex, 0, ...action.points);
       break;
     case "clearAll":
       state.drawnRoute = [];
@@ -139,53 +127,6 @@ export function redo() {
 function debouncedSave() {
   // Drawn route is intentionally ephemeral and should reset on refresh.
   return;
-}
-
-// --- Ramer-Douglas-Peucker simplification ---
-
-/**
- * Perpendicular distance from point p to line segment (a, b).
- * All inputs are [x, y] in projected UTM space.
- */
-function perpendicularDistance(p, a, b) {
-  const dx = b[0] - a[0];
-  const dy = b[1] - a[1];
-  const lenSq = dx * dx + dy * dy;
-  if (lenSq === 0) return Math.hypot(p[0] - a[0], p[1] - a[1]);
-  const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / lenSq));
-  const projX = a[0] + t * dx;
-  const projY = a[1] + t * dy;
-  return Math.hypot(p[0] - projX, p[1] - projY);
-}
-
-/**
- * Ramer-Douglas-Peucker line simplification.
- * @param {Array<[number, number]>} points - Projected UTM coordinate pairs
- * @param {number} epsilon - Tolerance in meters
- * @returns {Array<[number, number]>} Simplified points
- */
-function simplifyRDP(points, epsilon) {
-  if (points.length <= 2) return points.slice();
-
-  let maxDist = 0;
-  let maxIndex = 0;
-  const first = points[0];
-  const last = points[points.length - 1];
-
-  for (let i = 1; i < points.length - 1; i++) {
-    const dist = perpendicularDistance(points[i], first, last);
-    if (dist > maxDist) {
-      maxDist = dist;
-      maxIndex = i;
-    }
-  }
-
-  if (maxDist > epsilon) {
-    const left = simplifyRDP(points.slice(0, maxIndex + 1), epsilon);
-    const right = simplifyRDP(points.slice(maxIndex), epsilon);
-    return left.slice(0, -1).concat(right);
-  }
-  return [first, last];
 }
 
 // --- Distance calculation ---
@@ -454,12 +395,6 @@ function updateSnapAndRubberBand(e) {
     _snapTarget = null;
     return;
   }
-  if (state.drawFreehandActive) {
-    if (state.drawRubberBand) state.drawRubberBand.setLatLngs([]);
-    _snapTarget = null;
-    return;
-  }
-
   let cursorLatLng = e.latlng;
   _snapTarget = null;
 
@@ -550,118 +485,10 @@ function rebuildDrawLayers() {
   updateDistance();
 }
 
-// --- Freehand drawing ---
-
-function getFreehandTransformer() {
-  if (_freehandTransformer) return _freehandTransformer;
-  const transformer = ensureDrawTransformer();
-  if (transformer) {
-    _freehandTransformer = transformer;
-    return transformer;
-  }
-  return null;
-}
-
-function handleFreehandMouseDown(e) {
-  if (!state.drawModeActive) return;
-  if (!e.originalEvent?.shiftKey) return;
-
-  L.DomEvent.stop(e);
-  state.drawFreehandActive = true;
-  state.drawFreehandBuffer = [];
-  _freehandTransformer = null; // Reset for fresh projection
-
-  // Capture the start point
-  const latlng = e.latlng;
-  state.drawFreehandBuffer.push([latlng.lng, latlng.lat]);
-}
-
-function handleFreehandMouseMove(e) {
-  if (!state.drawFreehandActive) return;
-
-  const latlng = e.latlng;
-  const newPoint = [latlng.lng, latlng.lat];
-
-  // Distance-based throttling: skip points closer than 20m in UTM space
-  if (state.drawFreehandBuffer.length > 0) {
-    const transformer = getFreehandTransformer();
-    if (transformer) {
-      const lastPoint = state.drawFreehandBuffer[state.drawFreehandBuffer.length - 1];
-      const [lastX, lastY] = transformer.forward(lastPoint);
-      const [newX, newY] = transformer.forward(newPoint);
-      const dist = Math.hypot(newX - lastX, newY - lastY);
-      if (dist < 20) return; // Skip points too close together
-    }
-  }
-
-  state.drawFreehandBuffer.push(newPoint);
-
-  // Live preview: temporarily add freehand points to polyline
-  const previewRoute = state.drawAppendToEnd
-    ? [...state.drawnRoute, ...state.drawFreehandBuffer]
-    : [...state.drawFreehandBuffer.slice().reverse(), ...state.drawnRoute];
-  const latLngs = previewRoute.map(([lon, lat]) => [lat, lon]);
-  if (state.drawPolyline) {
-    state.drawPolyline.setLatLngs(latLngs);
-  }
-}
-
-function handleFreehandEnd() {
-  if (!state.drawFreehandActive) return;
-  state.drawFreehandActive = false;
-
-  if (state.drawFreehandBuffer.length < 2) {
-    state.drawFreehandBuffer = [];
-    updatePolyline(); // Restore original polyline
-    return;
-  }
-
-  // Project freehand points to UTM for simplification
-  const transformer = getFreehandTransformer();
-  let simplifiedLonLat = state.drawFreehandBuffer;
-
-  if (transformer && state.drawFreehandBuffer.length > 2) {
-    const projected = state.drawFreehandBuffer.map((p) => transformer.forward(p));
-    const simplified = simplifyRDP(projected, 10); // 10m epsilon
-    simplifiedLonLat = simplified.map((p) => transformer.inverse(p));
-  }
-
-  // Compute startIndex and push undo before mutating route
-  const startIndex = state.drawAppendToEnd ? state.drawnRoute.length : 0;
-  const pointsCopy = simplifiedLonLat.map((p) => [...p]);
-
-  // Append/prepend simplified points to route
-  if (state.drawAppendToEnd) {
-    state.drawnRoute.push(...simplifiedLonLat);
-  } else {
-    state.drawnRoute.unshift(...simplifiedLonLat.reverse());
-  }
-
-  pushUndo({ type: "freehand", startIndex, points: pointsCopy });
-
-  state.drawFreehandBuffer = [];
-  _freehandTransformer = null;
-
-  // Rebuild visual layers
-  rebuildDrawLayers();
-  debouncedSave();
-
-  // Notify callbacks
-  if (callbacks.onRouteChanged) callbacks.onRouteChanged();
-}
-
-function handleKeyUp(e) {
-  // End freehand on Shift release
-  if (e.key === "Shift" && state.drawFreehandActive) {
-    handleFreehandEnd();
-  }
-}
-
 // --- Map click handler ---
 
 function handleMapClick(e) {
   if (!state.drawModeActive) return;
-  if (state.drawFreehandActive) return;
   if (_suppressMapClick) return;
 
   L.DomEvent.stop(e);
@@ -779,15 +606,9 @@ export function toggleDrawMode() {
     // Register map event handlers
     _mapClickHandler = handleMapClick;
     _mouseMoveHandler = updateSnapAndRubberBand;
-    _mouseDownHandler = handleFreehandMouseDown;
-    _mouseUpHandler = handleFreehandEnd;
-    _keyUpHandler = handleKeyUp;
 
     state.mapInstance.on("click", _mapClickHandler);
     state.mapInstance.on("mousemove", _mouseMoveHandler);
-    state.mapInstance.on("mousedown", _mouseDownHandler);
-    state.mapInstance.on("mouseup", _mouseUpHandler);
-    document.addEventListener("keyup", _keyUpHandler);
 
     // Lock page overlays
     setPageOverlaysInteractive(false);
@@ -795,11 +616,6 @@ export function toggleDrawMode() {
     // Disable draw mode
     const container = state.mapInstance.getContainer();
     container.style.cursor = "";
-
-    // End any active freehand
-    if (state.drawFreehandActive) {
-      handleFreehandEnd();
-    }
 
     // Deselect any selected point
     deselectPoint();
@@ -817,15 +633,9 @@ export function toggleDrawMode() {
     // Remove map event handlers
     if (_mapClickHandler) state.mapInstance.off("click", _mapClickHandler);
     if (_mouseMoveHandler) state.mapInstance.off("mousemove", _mouseMoveHandler);
-    if (_mouseDownHandler) state.mapInstance.off("mousedown", _mouseDownHandler);
-    if (_mouseUpHandler) state.mapInstance.off("mouseup", _mouseUpHandler);
-    if (_keyUpHandler) document.removeEventListener("keyup", _keyUpHandler);
 
     _mapClickHandler = null;
     _mouseMoveHandler = null;
-    _mouseDownHandler = null;
-    _mouseUpHandler = null;
-    _keyUpHandler = null;
 
     // Unlock page overlays
     setPageOverlaysInteractive(true);
